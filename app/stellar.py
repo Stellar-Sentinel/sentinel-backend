@@ -129,6 +129,84 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
     }
 
 
+def _asset_details(operation: dict, prefix: str = "") -> dict:
+    field = lambda suffix: operation.get(f"{prefix}{suffix}")
+    asset_type = field("asset_type") or ("native" if not prefix else None)
+    asset = {"type": asset_type}
+    code = field("asset_code")
+    issuer = field("asset_issuer")
+    if code is not None:
+        asset["code"] = code
+    if issuer is not None:
+        asset["issuer"] = issuer
+    return asset
+
+
+def _normalize_operation(operation: dict) -> dict:
+    op_type = operation.get("type")
+    amounts = []
+    if op_type in {"path_payment_strict_receive", "path_payment_strict_send"}:
+        if operation.get("source_amount") is not None:
+            amounts.append({
+                "kind": "source",
+                "value": str(operation["source_amount"]),
+                "asset": _asset_details(operation, "source_"),
+            })
+        if operation.get("amount") is not None:
+            amounts.append({
+                "kind": "destination",
+                "value": str(operation["amount"]),
+                "asset": _asset_details(operation),
+            })
+    else:
+        value = operation.get("amount")
+        if value is None and op_type == "create_account":
+            value = operation.get("starting_balance")
+        if value is not None:
+            amounts.append({"kind": "amount", "value": str(value), "asset": _asset_details(operation)})
+
+    return {
+        "id": operation.get("id"),
+        "type": op_type,
+        "created_at": operation.get("created_at"),
+        "transaction_hash": operation.get("transaction_hash"),
+        "source_account": operation.get("source_account"),
+        "from_account": operation.get("from"),
+        "to_account": operation.get("to"),
+        "amounts": amounts,
+    }
+
+
+def list_account_operations(address: str, limit: int, cursor: str | None = None,
+                            settings: Settings | None = None) -> dict:
+    settings = settings or get_settings()
+    horizon_cursor = None
+    if cursor:
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            horizon_cursor = base64.urlsafe_b64decode(cursor + padding).decode("ascii")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail="Invalid operations cursor") from exc
+        if not horizon_cursor.isdigit():
+            raise HTTPException(status_code=422, detail="Invalid operations cursor")
+
+    params = {"limit": limit, "order": "desc", "include_failed": "false"}
+    if horizon_cursor:
+        params["cursor"] = horizon_cursor
+    url = f"{settings.horizon_url.rstrip('/')}/accounts/{address}/operations"
+    payload = _get(url, params=params, settings=settings)
+    records = payload.get("_embedded", {}).get("records", [])
+    next_cursor = None
+    if len(records) == limit and records[-1].get("id") is not None:
+        next_cursor = base64.urlsafe_b64encode(str(records[-1]["id"]).encode("ascii")).decode("ascii").rstrip("=")
+    return {
+        "operations": [_normalize_operation(record) for record in records],
+        "next_cursor": next_cursor,
+        "limit": limit,
+        "source": {"horizon_url": settings.horizon_url.rstrip("/"), "network": settings.network_passphrase},
+    }
+
+
 def network_status(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     health = _rpc("getHealth", {}, settings)
