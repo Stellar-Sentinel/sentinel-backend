@@ -28,6 +28,7 @@ MUXED_ADDRESS = make_strkey(96, bytes([2]) * 40)
 
 def test_health_and_cors():
     assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/live").json() == {"status": "ok"}
     response = client.options("/risk/score", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"})
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
@@ -53,6 +54,36 @@ def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     corrupted = MUXED_ADDRESS[:-2] + ("A" if MUXED_ADDRESS[-2] != "A" else "B") + MUXED_ADDRESS[-1]
     assert not is_valid_account_id(corrupted)
     assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
+
+
+def test_readiness_reports_each_dependency(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {})
+    monkeypatch.setattr(stellar, "_rpc", lambda *args, **kwargs: {"status": "healthy"})
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "dependencies": {"horizon": "ok", "soroban_rpc": "ok"},
+    }
+
+
+def test_readiness_returns_503_without_leaking_upstream_errors(monkeypatch):
+    def fail_horizon(*args, **kwargs):
+        raise HTTPException(status_code=503, detail="private upstream endpoint")
+
+    monkeypatch.setattr(stellar, "_get", fail_horizon)
+    monkeypatch.setattr(stellar, "_rpc", lambda *args, **kwargs: {"status": "healthy"})
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "dependencies": {"horizon": "unavailable", "soroban_rpc": "ok"},
+    }
+    assert "private upstream endpoint" not in response.text
 
 
 def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeypatch):

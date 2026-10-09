@@ -5,6 +5,10 @@
 Read-only FastAPI service for screening Stellar accounts and reading Soroban contract events. It fetches account activity from Horizon, exposes network status and events from Stellar RPC, and does not hold signing keys or submit transactions. Screening scores are transparent heuristics, not proof of fraud or financial/compliance advice.
 The screening endpoint accepts checksum-validated classic (`G...`) and muxed (`M...`) Stellar account IDs and forwards them unchanged to Horizon.
 
+## Health probes
+
+`GET /health` and `GET /live` are dependency-free liveness checks. `GET /ready` probes the configured Horizon fee-stats endpoint and Soroban RPC health method using `REQUEST_TIMEOUT_SECONDS`. It returns HTTP 200 when both are reachable, or HTTP 503 with a per-dependency `ok`/`unavailable` status when either is degraded. Upstream exception details are not included in the response.
+
 ## Architecture
 
 ```mermaid
@@ -17,7 +21,9 @@ flowchart LR
   Contract[Soroban Sentinel contract] -->|flagged events| RPC
 ```
 
-The backend is an event reader, not a transaction writer. The example configuration points to the current Testnet deployment. Set `CONTRACT_ID` to a deployed contract on the selected network; without it, `/events` returns HTTP 503 rather than fabricated data.
+The backend is an event reader, not a transaction writer. The example configuration points to the current Testnet deployment. Set `CONTRACT_ID` to a deployed contract on the selected network; without it, `/events` returns HTTP 503 rather than fabricated data. The service indexes new events into a local SQLite database while running, and `/events` returns the stored history with the existing response fields.
+
+`GET /accounts/{address}/operations?limit=20&cursor=...` returns a page of normalized Horizon operations. The page contains the operation ID/type, creation time, transaction hash, participating accounts, and an `amounts` array. Each amount keeps its own asset type, code, and issuer; path payments may return separate source and destination amounts. `next_cursor` is an opaque token for the following page and is `null` when the current page is short. Page size is limited to 1–100. These values are descriptive activity data and do not alter the risk score.
 
 ### Current Testnet contract
 
@@ -71,9 +77,20 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `ACTIVITY_WINDOW_DAYS` | `7` | Recent activity screening window. |
 | `EVENTS_LOOKBACK_LEDGERS` | `50000` | First-page event search window, clamped to RPC retention. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
+| `SCREENING_RATE_LIMIT_REQUESTS` | `30` | Maximum account-screening requests per client in the configured window. |
+| `SCREENING_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length for screening requests. |
+| `TRUSTED_PROXY_CIDRS` | empty | Comma-separated IPs/CIDRs of reverse proxies allowed to supply `X-Forwarded-For`. |
+
+Only `POST /risk/score` is rate-limited; health, events, and network status remain available. A client that exceeds its quota receives HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. The limiter uses an in-memory sliding window per application process, so deployments with multiple workers or replicas should enforce a shared limit at their gateway. Forwarded client addresses are used only when the direct peer matches `TRUSTED_PROXY_CIDRS`; configure the exact proxy ranges and ensure the proxy overwrites or appends `X-Forwarded-For` correctly. With no trusted ranges configured, the middleware uses the direct peer address and ignores forwarded headers.
+| `EVENT_STORE_PATH` | `./data/events.sqlite3` | SQLite file used for indexed Soroban flag history and the resume cursor. |
+| `EVENT_INGEST_INTERVAL_SECONDS` | `30` | Delay between event-indexing polls while the app is running. |
 
 Do not commit `.env`, account secrets, signing keys, or tokens. The current service requires no secrets.
+
+The SQLite database creates `flag_events(scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash)` and `ingestion_state(scope, cursor)` automatically. The `(scope, event_id)` primary key makes replay idempotent; scope is the configured network and contract. The service stores the RPC resume cursor and continues after restarts. Back up `EVENT_STORE_PATH` along with application config; deleting or restoring an older database makes ingestion resume from that database's cursor. Local indexed history begins with the RPC provider's current retained window and only preserves events observed after indexing starts; it cannot recover events already pruned upstream. If RPC is temporarily unavailable, `/events` serves indexed records and marks `source.ingestion_status` as `stale`. For multiple application replicas, use one ingestion worker and a supported shared SQLite volume; SQLite is not intended as a network database. Schema is initialized on startup; schema changes should be shipped with explicit migrations.
 
 ## Data and scoring limits
 
 The score uses a bounded sample of recent Horizon operations, up to 200, and fixed baseline thresholds. It is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
+
+The `/risk/score` response includes an `assets` array with each Horizon balance and its asset identity, plus `metrics.trustline_count`. Issued-asset balances remain separate from the native XLM balance and do not affect the screening score. Malformed balance records are skipped.
