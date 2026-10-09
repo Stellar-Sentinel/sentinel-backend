@@ -4,6 +4,8 @@
 
 Read-only FastAPI service for screening Stellar accounts and reading Soroban contract events. It fetches account activity from Horizon, exposes network status and events from Stellar RPC, and does not hold signing keys or submit transactions. Screening scores are transparent heuristics, not proof of fraud or financial/compliance advice. The app reuses a bounded HTTP connection pool for the lifetime of the process and closes it during shutdown.
 
+Every HTTP response includes `X-Request-ID`. A supplied ID is reused only when it is 1–64 ASCII letters, digits, dots, underscores, or hyphens; otherwise the service generates a UUID and uses the selected value for request correlation.
+
 ## Health probes
 
 `GET /health` and `GET /live` are dependency-free liveness checks. `GET /ready` probes the configured Horizon fee-stats endpoint and Soroban RPC health method using `REQUEST_TIMEOUT_SECONDS`. It returns HTTP 200 when both are reachable, or HTTP 503 with a per-dependency `ok`/`unavailable` status when either is degraded. Upstream exception details are not included in the response.
@@ -74,8 +76,12 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `CONTRACT_ID` | Stellar Sentinel Testnet contract | Deployed contract ID for `/events`; use a contract on the configured network. |
 | `ENVIRONMENT` | `development` | Runtime environment label. |
 | `REQUEST_TIMEOUT_SECONDS` | `8.0` | Outbound HTTP timeout. |
+| `UPSTREAM_MAX_RETRIES` | `2` | Number of retries for safe read requests after transient network or HTTP failures; maximum is 3. |
+| `UPSTREAM_RETRY_BACKOFF_SECONDS` | `0.2` | Exponential retry backoff base in seconds; maximum is 1. |
+| `UPSTREAM_RETRY_AFTER_CAP_SECONDS` | `2.0` | Maximum delay honored from `Retry-After` or computed backoff; maximum is 5 seconds. |
 | `OPERATION_SCAN_LIMIT` | `200` | Maximum recent operations examined (Horizon limit is 200). |
 | `ACTIVITY_WINDOW_DAYS` | `7` | Recent activity screening window. |
+| `RISK_POLICY_VERSION` | `1.0.0` | Semantic version returned with each screening result; bump when scoring semantics change. |
 | `RISK_ACTIVITY_BURST_MIN_OPERATIONS` / `RISK_ACTIVITY_BURST_POINTS` | `50` / `25` | Operation-count signal cutoff and points. |
 | `RISK_TRANSFER_VOLUME_XLM_THRESHOLD` / `RISK_TRANSFER_VOLUME_POINTS` | `10000` / `25` | Native XLM volume signal cutoff and points. |
 | `RISK_COUNTERPARTY_MIN_COUNT` / `RISK_COUNTERPARTY_POINTS` | `20` / `25` | Distinct-counterparty signal cutoff and points. |
@@ -93,11 +99,15 @@ Only `POST /risk/score` is rate-limited; health, events, and network status rema
 
 Do not commit `.env`, account secrets, signing keys, or tokens. The current service requires no secrets.
 
+Upstream retry behavior applies only to read-only Horizon requests and Soroban RPC calls. It retries transport errors and selected transient statuses, respects numeric or HTTP-date `Retry-After` values within the configured cap, and leaves client errors and JSON-RPC application errors untouched.
+
 The SQLite database creates `flag_events(scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash)` and `ingestion_state(scope, cursor)` automatically. The `(scope, event_id)` primary key makes replay idempotent; scope is the configured network and contract. The service stores the RPC resume cursor and continues after restarts. Back up `EVENT_STORE_PATH` along with application config; deleting or restoring an older database makes ingestion resume from that database's cursor. Local indexed history begins with the RPC provider's current retained window and only preserves events observed after indexing starts; it cannot recover events already pruned upstream. If RPC is temporarily unavailable, `/events` serves indexed records and marks `source.ingestion_status` as `stale`. For multiple application replicas, use one ingestion worker and a supported shared SQLite volume; SQLite is not intended as a network database. Schema is initialized on startup; schema changes should be shipped with explicit migrations.
 
 ## Data and scoring limits
 
 The score uses a bounded sample of recent Horizon operations, up to 200, and fixed baseline thresholds. The response's `activity_sample` reports the effective scan cap, actual records scanned, and whether the result may be incomplete because it reached the cap. Scores use observed activity rather than complete account history. This is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
 The score uses a bounded sample of recent Horizon operations, up to 200, with configurable, validated signal thresholds and weights. Defaults preserve the documented baseline behavior; the final score is capped at 100. It is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
+
+Screening responses include `scoring_policy_version`. Set `RISK_POLICY_VERSION` to a semantic version and bump it when scoring signal meaning or scoring rules change; operational configuration should label any customized policy with its own version.
 
 The `/risk/score` response includes an `assets` array with each Horizon balance and its asset identity, plus `metrics.trustline_count`. Issued-asset balances remain separate from the native XLM balance and do not affect the screening score. Malformed balance records are skipped.

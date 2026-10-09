@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
 from app.routers import accounts, health, events, risk
+from app.request_id import RequestIDMiddleware
 from app.request_logging import RequestLoggingMiddleware
 from app.event_store import get_event_store
 
@@ -69,6 +70,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
     expose_headers=["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
 )
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(health.router)

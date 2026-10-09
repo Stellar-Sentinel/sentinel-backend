@@ -12,8 +12,12 @@ class Settings(BaseSettings):
     contract_id: str = ""
     environment: str = "development"
     request_timeout_seconds: float = 8.0
+    upstream_max_retries: int = Field(default=2, ge=0, le=3)
+    upstream_retry_backoff_seconds: float = Field(default=0.2, ge=0, le=1)
+    upstream_retry_after_cap_seconds: float = Field(default=2.0, gt=0, le=5)
     operation_scan_limit: int = 200
     activity_window_days: int = 7
+    risk_policy_version: str = Field(default="1.0.0", pattern=r"^\d+\.\d+\.\d+$")
     risk_activity_burst_min_operations: int = Field(default=50, ge=1, le=2_000)
     risk_activity_burst_points: int = Field(default=25, ge=0, le=100)
     risk_transfer_volume_xlm_threshold: float = Field(default=10_000, gt=0, le=1_000_000_000)
