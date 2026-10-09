@@ -108,6 +108,35 @@ def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeyp
     assert client.post("/risk/score", json={"address": ADDRESS, "recent_tx_count": 10}).status_code == 422
 
 
+def test_score_reports_when_operation_sample_reaches_limit(monkeypatch):
+    record = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "type": "payment",
+        "source_account": ADDRESS,
+        "to": "G" + "B" * 55,
+        "asset_type": "native",
+        "amount": "1",
+    }
+    monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
+        {"sequence": "20", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS)
+        else {"_embedded": {"records": [record, record, record]}}
+    ))
+
+    full_sample = stellar.score_account(
+        ADDRESS, settings=Settings(operation_scan_limit=3),
+    )["activity_sample"]
+    short_sample = stellar.score_account(
+        ADDRESS, settings=Settings(operation_scan_limit=4),
+    )["activity_sample"]
+
+    assert full_sample == {
+        "operations_scanned": 3,
+        "scan_limit": 3,
+        "may_be_incomplete": True,
+    }
+    assert short_sample["operations_scanned"] == 3
+    assert short_sample["may_be_incomplete"] is False
 def test_screening_response_includes_configured_policy_version(monkeypatch):
     monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
         {"sequence": "10", "balances": []}

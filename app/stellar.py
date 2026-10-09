@@ -192,7 +192,8 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=settings.activity_window_days)
     ops_url = f"{settings.horizon_url.rstrip('/')}/accounts/{address}/operations"
-    ops = _get(ops_url, {"limit": min(settings.operation_scan_limit, 200), "order": "desc", "include_failed": "false"}, settings)
+    scan_limit = min(settings.operation_scan_limit, 200)
+    ops = _get(ops_url, {"limit": scan_limit, "order": "desc", "include_failed": "false"}, settings)
     embedded = ops.get("_embedded")
     records = embedded.get("records", []) if isinstance(embedded, dict) else []
     if not isinstance(records, list):
@@ -287,6 +288,11 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
                     "distinct_counterparties": len(counterparties), "account_sequence": seq,
                     "native_xlm_balance": round(native_balance, 7), "trustline_count": trustline_count,
                     "window_days": settings.activity_window_days},
+        "activity_sample": {
+            "operations_scanned": len(records),
+            "scan_limit": scan_limit,
+            "may_be_incomplete": scan_limit > 0 and len(records) >= scan_limit,
+        },
         "assets": assets,
         "source": {"horizon_url": settings.horizon_url.rstrip("/"), "network": settings.network_passphrase,
                    "observed_at": now.isoformat()},
