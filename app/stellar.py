@@ -1,11 +1,21 @@
 """Read-only clients for Horizon and Stellar RPC."""
 from datetime import datetime, timedelta, timezone
 import base64
+import math
 
 import httpx
 from fastapi import HTTPException
 
 from app.config import Settings, get_settings
+
+
+def _finite_float(value) -> float:
+    """Parse an upstream numeric field without allowing NaN or infinity through."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _get(url: str, params: dict | None = None, settings: Settings | None = None) -> dict:
@@ -68,14 +78,11 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
         for account_id in (source, destination, op.get("from")):
             if account_id and account_id != address:
                 counterparties.add(account_id)
-        try:
-            # Only native XLM amounts are included; asset amounts are never mixed into XLM totals.
-            if op.get("type") == "create_account":
-                volume += abs(float(op.get("starting_balance", "0")))
-            elif op.get("asset_type") in (None, "native"):
-                volume += abs(float(op.get("amount", "0")))
-        except (TypeError, ValueError):
-            pass
+        # Only native XLM amounts are included; asset amounts are never mixed into XLM totals.
+        if op.get("type") == "create_account":
+            volume += abs(_finite_float(op.get("starting_balance", "0")))
+        elif op.get("asset_type") in (None, "native"):
+            volume += abs(_finite_float(op.get("amount", "0")))
         transfers += 1
 
     signals = []
@@ -106,8 +113,8 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
         add_signal("new_account_activity", "Low sequence account with observed activity", seq, "review", 15,
                    "The account has a low sequence number; this alone is not evidence of malicious behavior.")
 
-    native_balance = next((float(item["balance"]) for item in account.get("balances", [])
-                           if item.get("asset_type") == "native" and item.get("balance") is not None), 0.0)
+    native_balance = _finite_float(next((item.get("balance") for item in account.get("balances", [])
+                                         if item.get("asset_type") == "native" and item.get("balance") is not None), 0.0))
 
     score = min(score, 100)
     threshold = 70
