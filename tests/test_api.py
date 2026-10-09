@@ -26,6 +26,10 @@ def reset_screening_cache():
 
 def test_health_and_cors():
     assert client.get("/health").json() == {"status": "ok"}
+    security_headers = client.get("/health").headers
+    assert security_headers["x-content-type-options"] == "nosniff"
+    assert security_headers["x-frame-options"] == "DENY"
+    assert security_headers["referrer-policy"] == "no-referrer"
     assert client.get("/live").json() == {"status": "ok"}
     response = client.options("/risk/score", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"})
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
@@ -134,6 +138,7 @@ def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeyp
     response = client.post("/risk/score", json={"address": ADDRESS})
     assert response.status_code == 200
     payload = response.json()
+    assert response.headers["cache-control"] == "no-store"
     assert payload["score"] == 25
     assert payload["threshold_exceeded"] is False
     assert payload["metrics"]["transfer_volume_xlm"] == 12000

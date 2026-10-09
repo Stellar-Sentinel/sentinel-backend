@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.middleware.api_key import ApiKeyMiddleware
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
 from app.routers import accounts, health, events, risk
 from app.models import NetworkStatusResponse
@@ -76,6 +77,7 @@ if settings.api_key:
     app.add_middleware(ApiKeyMiddleware, api_key=settings.api_key)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(health.router)
 app.include_router(accounts.router, prefix="/accounts", tags=["accounts"])
