@@ -66,12 +66,17 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `CONTRACT_ID` | Stellar Sentinel Testnet contract | Deployed contract ID for `/events`; use a contract on the configured network. |
 | `ENVIRONMENT` | `development` | Runtime environment label. |
 | `REQUEST_TIMEOUT_SECONDS` | `8.0` | Outbound HTTP timeout. |
+| `UPSTREAM_MAX_RETRIES` | `2` | Number of retries for safe read requests after transient network or HTTP failures; maximum is 3. |
+| `UPSTREAM_RETRY_BACKOFF_SECONDS` | `0.2` | Exponential retry backoff base in seconds; maximum is 1. |
+| `UPSTREAM_RETRY_AFTER_CAP_SECONDS` | `2.0` | Maximum delay honored from `Retry-After` or computed backoff; maximum is 5 seconds. |
 | `OPERATION_SCAN_LIMIT` | `200` | Maximum recent operations examined (Horizon limit is 200). |
 | `ACTIVITY_WINDOW_DAYS` | `7` | Recent activity screening window. |
 | `EVENTS_LOOKBACK_LEDGERS` | `50000` | First-page event search window, clamped to RPC retention. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
 
 Do not commit `.env`, account secrets, signing keys, or tokens. The current service requires no secrets.
+
+Upstream retry behavior applies only to read-only Horizon requests and Soroban RPC calls. It retries transport errors and selected transient statuses, respects numeric or HTTP-date `Retry-After` values within the configured cap, and leaves client errors and JSON-RPC application errors untouched.
 
 ## Data and scoring limits
 

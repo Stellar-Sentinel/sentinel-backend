@@ -1,17 +1,62 @@
 """Read-only clients for Horizon and Stellar RPC."""
 from datetime import datetime, timedelta, timezone
 import base64
+from email.utils import parsedate_to_datetime
+import time
 
 import httpx
 from fastapi import HTTPException
 
 from app.config import Settings, get_settings
 
+_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _retry_after_seconds(response: httpx.Response, settings: Settings, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    delay = None
+    if retry_after:
+        try:
+            delay = max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                delay = max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                delay = None
+    if delay is None:
+        delay = settings.upstream_retry_backoff_seconds * (2 ** attempt)
+    return min(delay, settings.upstream_retry_after_cap_seconds)
+
+
+def _request_with_retries(method, url: str, settings: Settings, **kwargs) -> httpx.Response:
+    retries = settings.upstream_max_retries
+    for attempt in range(retries + 1):
+        try:
+            response = method(url, **kwargs)
+        except httpx.TransportError:
+            if attempt >= retries:
+                raise
+            delay = settings.upstream_retry_backoff_seconds * (2 ** attempt)
+            time.sleep(min(delay, settings.upstream_retry_after_cap_seconds))
+            continue
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and attempt < retries:
+            time.sleep(_retry_after_seconds(response, settings, attempt))
+            continue
+        return response
+
+    raise RuntimeError("upstream retry loop ended unexpectedly")
+
 
 def _get(url: str, params: dict | None = None, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     try:
-        response = httpx.get(url, params=params, timeout=settings.request_timeout_seconds)
+        response = _request_with_retries(
+            httpx.get, url, settings, params=params, timeout=settings.request_timeout_seconds,
+        )
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as exc:
@@ -25,8 +70,10 @@ def _get(url: str, params: dict | None = None, settings: Settings | None = None)
 def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     try:
-        response = httpx.post(
+        response = _request_with_retries(
+            httpx.post,
             settings.soroban_rpc_url,
+            settings,
             json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
             timeout=settings.request_timeout_seconds,
         )

@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     contract_id: str = ""
     environment: str = "development"
     request_timeout_seconds: float = 8.0
+    upstream_max_retries: int = Field(default=2, ge=0, le=3)
+    upstream_retry_backoff_seconds: float = Field(default=0.2, ge=0, le=1)
+    upstream_retry_after_cap_seconds: float = Field(default=2.0, gt=0, le=5)
     operation_scan_limit: int = 200
     activity_window_days: int = 7
     events_lookback_ledgers: int = 50_000

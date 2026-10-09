@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import httpx
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
@@ -73,6 +74,43 @@ def test_network_status_includes_rpc_retention(monkeypatch):
     result = stellar.network_status(Settings())
     assert result["ledger_retention_window"] == 120960
     assert result["oldest_ledger"] == 50
+
+
+def test_transient_upstream_status_retries_and_honors_retry_after(monkeypatch):
+    request = httpx.Request("GET", "https://horizon.example")
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "0.4"}, request=request),
+        httpx.Response(200, json={"ok": True}, request=request),
+    ]
+    delays = []
+
+    def fake_get(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(stellar.httpx, "get", fake_get)
+    monkeypatch.setattr(stellar.time, "sleep", delays.append)
+
+    result = stellar._get("https://horizon.example", settings=Settings())
+
+    assert result == {"ok": True}
+    assert delays == [0.4]
+
+
+def test_permanent_upstream_status_is_not_retried(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(stellar.httpx, "get", fake_get)
+
+    try:
+        stellar._get("https://horizon.example/accounts/missing", settings=Settings())
+        assert False, "expected 404 mapping"
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    assert len(calls) == 1
 
 
 def test_events_cursor_skips_health_and_reuses_cursor(monkeypatch):
