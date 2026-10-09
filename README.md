@@ -82,7 +82,7 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `UPSTREAM_MAX_RETRIES` | `2` | Number of retries for safe read requests after transient network or HTTP failures; maximum is 3. |
 | `UPSTREAM_RETRY_BACKOFF_SECONDS` | `0.2` | Exponential retry backoff base in seconds; maximum is 1. |
 | `UPSTREAM_RETRY_AFTER_CAP_SECONDS` | `2.0` | Maximum delay honored from `Retry-After` or computed backoff; maximum is 5 seconds. |
-| `OPERATION_SCAN_LIMIT` | `200` | Maximum recent operations examined (Horizon limit is 200). |
+| `OPERATION_SCAN_LIMIT` | `200` | Maximum recent operations examined across Horizon pages; hard maximum is 1,000 and each page contains at most 200. |
 | `ACTIVITY_WINDOW_DAYS` | `7` | Recent activity screening window. |
 | `RISK_POLICY_VERSION` | `1.0.0` | Semantic version returned with each screening result; bump when scoring semantics change. |
 | `RISK_ACTIVITY_BURST_MIN_OPERATIONS` / `RISK_ACTIVITY_BURST_POINTS` | `50` / `25` | Operation-count signal cutoff and points. |
@@ -109,8 +109,7 @@ The SQLite database creates `flag_events(scope, event_id, ledger, created_at, ag
 
 ## Data and scoring limits
 
-The score uses a bounded sample of recent Horizon operations, up to 200, and fixed baseline thresholds. The response's `activity_sample` reports the effective scan cap, actual records scanned, and whether the result may be incomplete because it reached the cap. Scores use observed activity rather than complete account history. This is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
-The score uses a bounded sample of recent Horizon operations, up to 200, with configurable, validated signal thresholds and weights. Defaults preserve the documented baseline behavior; the final score is capped at 100. It is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
+The score uses a bounded sample of recent Horizon operations across pages, up to the configured `OPERATION_SCAN_LIMIT` (maximum 1,000). The response's `activity_sample` reports the effective scan cap, actual records scanned, and whether the result may be incomplete because it reached the cap. Scoring uses configurable, validated signal thresholds and weights; the final score is capped at 100. Scores use observed activity rather than complete account history. This is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
 
 Screening responses include `scoring_policy_version`. Set `RISK_POLICY_VERSION` to a semantic version and bump it when scoring signal meaning or scoring rules change; operational configuration should label any customized policy with its own version.
 

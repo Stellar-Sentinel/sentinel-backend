@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from app.config import Settings, get_settings
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+HORIZON_OPERATION_PAGE_SIZE = 200
 
 
 def _retry_after_seconds(response: httpx.Response, settings: Settings, attempt: int) -> float:
@@ -206,18 +207,52 @@ def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
     return result
 
 
+def _scan_account_operations(address: str, settings: Settings) -> tuple[list[dict], int, bool]:
+    """Read the bounded recent-operation sample across Horizon pages."""
+    scan_limit = settings.operation_scan_limit
+    if scan_limit <= 0:
+        return [], scan_limit, False
+
+    url = f"{settings.horizon_url.rstrip('/')}/accounts/{address}/operations"
+    records: list[dict] = []
+    cursor: str | None = None
+    may_be_incomplete = False
+    while len(records) < scan_limit:
+        page_limit = min(HORIZON_OPERATION_PAGE_SIZE, scan_limit - len(records))
+        params = {"limit": page_limit, "order": "desc", "include_failed": "false"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        payload = _get(url, params=params, settings=settings)
+        embedded = payload.get("_embedded")
+        page = embedded.get("records", []) if isinstance(embedded, dict) else []
+        if not isinstance(page, list) or not page:
+            break
+        page_records = [record for record in page[:page_limit] if isinstance(record, dict)]
+        if not page_records:
+            break
+        records.extend(page_records)
+
+        if len(records) >= scan_limit:
+            may_be_incomplete = len(page) >= page_limit
+            break
+        if len(page) < page_limit:
+            break
+
+        next_cursor = page_records[-1].get("id")
+        if next_cursor is None or str(next_cursor) == cursor:
+            may_be_incomplete = True
+            break
+        cursor = str(next_cursor)
+
+    return records, scan_limit, may_be_incomplete
+
+
 def score_account(address: str, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     account = _get(f"{settings.horizon_url.rstrip('/')}/accounts/{address}", settings=settings)
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=settings.activity_window_days)
-    ops_url = f"{settings.horizon_url.rstrip('/')}/accounts/{address}/operations"
-    scan_limit = min(settings.operation_scan_limit, 200)
-    ops = _get(ops_url, {"limit": scan_limit, "order": "desc", "include_failed": "false"}, settings)
-    embedded = ops.get("_embedded")
-    records = embedded.get("records", []) if isinstance(embedded, dict) else []
-    if not isinstance(records, list):
-        records = []
+    records, scan_limit, may_be_incomplete = _scan_account_operations(address, settings)
     recent = []
     for op in records:
         if not isinstance(op, dict) or not isinstance(op.get("created_at"), str):
@@ -311,7 +346,7 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
         "activity_sample": {
             "operations_scanned": len(records),
             "scan_limit": scan_limit,
-            "may_be_incomplete": scan_limit > 0 and len(records) >= scan_limit,
+            "may_be_incomplete": may_be_incomplete,
         },
         "assets": assets,
         "source": {"horizon_url": _public_endpoint(settings.horizon_url.rstrip("/")), "network": settings.network_passphrase,

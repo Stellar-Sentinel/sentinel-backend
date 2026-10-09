@@ -137,6 +137,59 @@ def test_score_reports_when_operation_sample_reaches_limit(monkeypatch):
     }
     assert short_sample["operations_scanned"] == 3
     assert short_sample["may_be_incomplete"] is False
+
+
+def test_score_paginates_operations_within_total_scan_cap(monkeypatch):
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    def operation(operation_id):
+        return {
+            "id": str(operation_id),
+            "created_at": created_at,
+            "type": "payment",
+            "source_account": ADDRESS,
+            "to": "G" + "B" * 55,
+            "asset_type": "native",
+            "amount": "1",
+        }
+
+    pages = [
+        [operation(index) for index in range(200)],
+        [operation(index) for index in range(200, 250)],
+    ]
+    calls = []
+
+    def fake_get(url, params=None, settings=None):
+        if url.endswith("/accounts/" + ADDRESS):
+            return {"sequence": "100", "balances": []}
+        calls.append(params)
+        return {"_embedded": {"records": pages.pop(0)}}
+
+    monkeypatch.setattr(stellar, "_get", fake_get)
+    result = stellar.score_account(ADDRESS, settings=Settings(operation_scan_limit=250))
+
+    assert [call["limit"] for call in calls] == [200, 50]
+    assert calls[1]["cursor"] == "199"
+    assert result["metrics"]["operations_scanned"] == 250
+    assert result["activity_sample"] == {
+        "operations_scanned": 250,
+        "scan_limit": 250,
+        "may_be_incomplete": True,
+    }
+
+
+def test_short_horizon_page_marks_scan_complete(monkeypatch):
+    records = [{"id": str(index)} for index in range(10)]
+    monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
+        {"sequence": "100", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS)
+        else {"_embedded": {"records": records}}
+    ))
+
+    result = stellar.score_account(ADDRESS, settings=Settings(operation_scan_limit=250))
+
+    assert result["activity_sample"]["operations_scanned"] == 10
+    assert result["activity_sample"]["may_be_incomplete"] is False
 def test_screening_response_includes_configured_policy_version(monkeypatch):
     monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
         {"sequence": "10", "balances": []}
