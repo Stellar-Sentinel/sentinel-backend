@@ -1,6 +1,7 @@
 """Read-only clients for Horizon and Stellar RPC."""
 from datetime import datetime, timedelta, timezone
 import base64
+from urllib.parse import urlsplit, urlunsplit
 from email.utils import parsedate_to_datetime
 import time
 import math
@@ -88,6 +89,25 @@ def _finite_float(value) -> float:
     except (TypeError, ValueError, OverflowError):
         return 0.0
     return parsed if math.isfinite(parsed) else 0.0
+
+
+def _public_endpoint(url: str) -> str:
+    """Remove credentials and opaque query data before exposing an endpoint URL."""
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+    except ValueError:
+        return "[redacted]"
+    if hostname is None:
+        return f"{parts.scheme}://[redacted]" if parts.scheme else "[redacted]"
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    try:
+        port = parts.port
+    except ValueError:
+        return f"{parts.scheme}://[redacted]"
+    netloc = f"{hostname}:{port}" if port is not None else hostname
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def _get(url: str, params: dict | None = None, settings: Settings | None = None) -> dict:
@@ -294,7 +314,7 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
             "may_be_incomplete": scan_limit > 0 and len(records) >= scan_limit,
         },
         "assets": assets,
-        "source": {"horizon_url": settings.horizon_url.rstrip("/"), "network": settings.network_passphrase,
+        "source": {"horizon_url": _public_endpoint(settings.horizon_url.rstrip("/")), "network": settings.network_passphrase,
                    "observed_at": now.isoformat()},
         "as_of": now.isoformat(),
         "on_chain_action": "none",
@@ -375,14 +395,14 @@ def list_account_operations(address: str, limit: int, cursor: str | None = None,
         "operations": [_normalize_operation(record) for record in records],
         "next_cursor": next_cursor,
         "limit": limit,
-        "source": {"horizon_url": settings.horizon_url.rstrip("/"), "network": settings.network_passphrase},
+        "source": {"horizon_url": _public_endpoint(settings.horizon_url.rstrip("/")), "network": settings.network_passphrase},
     }
 
 
 def network_status(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     health = _rpc("getHealth", {}, settings)
-    return {"network": settings.network_passphrase, "rpc_url": settings.soroban_rpc_url,
+    return {"network": settings.network_passphrase, "rpc_url": _public_endpoint(settings.soroban_rpc_url),
             "status": health.get("status", "unknown"), "latest_ledger": health.get("latestLedger"),
             "oldest_ledger": health.get("oldestLedger"),
             "ledger_retention_window": health.get("ledgerRetentionWindow"),
@@ -443,7 +463,7 @@ def list_flag_events(limit: int, cursor: str | None = None, settings: Settings |
     settings = settings or get_settings()
     output, next_cursor = fetch_flag_event_page(limit, cursor, settings)
     return {"events": output, "next_cursor": next_cursor,
-            "source": {"rpc_url": settings.soroban_rpc_url, "network": settings.network_passphrase,
+            "source": {"rpc_url": _public_endpoint(settings.soroban_rpc_url), "network": settings.network_passphrase,
                        "contract_id": settings.contract_id}}
 
 
