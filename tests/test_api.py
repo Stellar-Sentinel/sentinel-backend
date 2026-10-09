@@ -1,5 +1,7 @@
+import json
 from datetime import datetime, timezone
 
+import httpx
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
@@ -28,6 +30,21 @@ def test_request_id_is_propagated_or_generated():
     rejected = client.get("/health", headers={"X-Request-ID": "bad id"})
     assert rejected.headers["x-request-id"] != "bad id"
     assert len(rejected.headers["x-request-id"]) == 32
+
+
+def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
+    address = "G" + "Z" * 55
+    with caplog.at_level("INFO", logger="sentinel.request"):
+        response = client.get(f"/missing/{address}?token=do-not-log")
+
+    assert response.status_code == 404
+    log_record = json.loads(caplog.records[-1].message)
+    assert log_record["method"] == "GET"
+    assert log_record["route"] == "<unmatched>"
+    assert log_record["status"] == 404
+    assert address not in caplog.text
+    assert "do-not-log" not in caplog.text
+    assert "token" not in caplog.text
 
 
 def test_readiness_reports_each_dependency(monkeypatch):
@@ -78,6 +95,38 @@ def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeyp
     assert client.post("/risk/score", json={"address": ADDRESS, "recent_tx_count": 10}).status_code == 422
 
 
+def test_risk_thresholds_and_weights_are_configurable_and_bounded(monkeypatch):
+    recent = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
+        {"sequence": "50", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS)
+        else {"_embedded": {"records": [{
+            "created_at": recent,
+            "type": "payment",
+            "source_account": ADDRESS,
+            "to": "G" + "B" * 55,
+            "asset_type": "native",
+            "amount": "120",
+        }]}}
+    ))
+    settings = Settings(
+        risk_activity_burst_min_operations=1,
+        risk_activity_burst_points=50,
+        risk_transfer_volume_xlm_threshold=100,
+        risk_transfer_volume_points=80,
+        risk_high_score_threshold=60,
+        risk_elevated_score_threshold=30,
+    )
+
+    result = stellar.score_account(ADDRESS, settings=settings)
+
+    assert result["score"] == 100
+    assert result["risk_level"] == "high"
+    assert result["threshold"] == 60
+    assert result["threshold_exceeded"] is True
+    assert "at least 1 operations" in result["signals"][0]["explanation"]
+
+
 def test_events_requires_contract_id():
     monkeypatch_settings = Settings(contract_id="")
     try:
@@ -116,6 +165,47 @@ def test_network_status_includes_rpc_retention(monkeypatch):
     result = stellar.network_status(Settings())
     assert result["ledger_retention_window"] == 120960
     assert result["oldest_ledger"] == 50
+
+
+def test_upstream_requests_use_one_managed_client():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+
+        def get(self, url, **kwargs):
+            self.calls.append(("GET", url, kwargs))
+            return httpx.Response(200, json={"fee_stats": True})
+
+        def post(self, url, **kwargs):
+            self.calls.append(("POST", url, kwargs))
+            return httpx.Response(200, json={"result": {"status": "healthy"}})
+
+        def close(self):
+            self.closed = True
+
+    settings = Settings(request_timeout_seconds=2.5)
+    fake_client = FakeClient()
+    stellar.set_http_client(fake_client)
+    try:
+        stellar._get("https://horizon.example/fee_stats", settings=settings)
+        stellar._rpc("getHealth", {}, settings=settings)
+    finally:
+        stellar.close_http_client()
+
+    assert [call[0] for call in fake_client.calls] == ["GET", "POST"]
+    assert all(call[2]["timeout"] == 2.5 for call in fake_client.calls)
+    assert fake_client.closed is True
+
+
+def test_application_lifespan_closes_shared_client():
+    with TestClient(app):
+        shared_client = stellar._http_client
+        assert shared_client is not None
+        assert not shared_client.is_closed
+
+    assert shared_client.is_closed
+    assert stellar._http_client is None
 
 
 def test_events_cursor_skips_health_and_reuses_cursor(monkeypatch):
