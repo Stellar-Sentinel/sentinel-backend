@@ -4,6 +4,8 @@
 
 Read-only FastAPI service for screening Stellar accounts and reading Soroban contract events. It fetches account activity from Horizon, exposes network status and events from Stellar RPC, and does not hold signing keys or submit transactions. Screening scores are transparent heuristics, not proof of fraud or financial/compliance advice.
 
+Every HTTP response includes `X-Request-ID`. A supplied ID is reused only when it is 1–64 ASCII letters, digits, dots, underscores, or hyphens; otherwise the service generates a UUID and uses the selected value for request correlation.
+
 ## Architecture
 
 ```mermaid

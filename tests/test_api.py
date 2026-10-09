@@ -17,6 +17,18 @@ def test_health_and_cors():
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
+def test_request_id_is_propagated_or_generated():
+    accepted = client.get("/health", headers={"X-Request-ID": "trace_123-abc"})
+    assert accepted.headers["x-request-id"] == "trace_123-abc"
+
+    generated = client.get("/health")
+    assert len(generated.headers["x-request-id"]) == 32
+
+    rejected = client.get("/health", headers={"X-Request-ID": "bad id"})
+    assert rejected.headers["x-request-id"] != "bad id"
+    assert len(rejected.headers["x-request-id"]) == 32
+
+
 def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeypatch):
     records = [{"created_at": datetime.now(timezone.utc).isoformat(), "type": "payment",
                 "source_account": ADDRESS, "to": "G" + "B" * 55, "asset_type": "native", "amount": "12000"}]
