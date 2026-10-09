@@ -1,11 +1,31 @@
 """Read-only clients for Horizon and Stellar RPC."""
 from datetime import datetime, timedelta, timezone
 import base64
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException
 
 from app.config import Settings, get_settings
+
+
+def _public_endpoint(url: str) -> str:
+    """Remove credentials and opaque query data before exposing an endpoint URL."""
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+    except ValueError:
+        return "[redacted]"
+    if hostname is None:
+        return f"{parts.scheme}://[redacted]" if parts.scheme else "[redacted]"
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    try:
+        port = parts.port
+    except ValueError:
+        return f"{parts.scheme}://[redacted]"
+    netloc = f"{hostname}:{port}" if port is not None else hostname
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def _get(url: str, params: dict | None = None, settings: Settings | None = None) -> dict:
@@ -122,7 +142,7 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
                     "transfers_in_window": transfers, "transfer_volume_xlm": round(volume, 7),
                     "distinct_counterparties": len(counterparties), "account_sequence": seq,
                     "native_xlm_balance": round(native_balance, 7), "window_days": settings.activity_window_days},
-        "source": {"horizon_url": settings.horizon_url.rstrip("/"), "network": settings.network_passphrase,
+        "source": {"horizon_url": _public_endpoint(settings.horizon_url.rstrip("/")), "network": settings.network_passphrase,
                    "observed_at": now.isoformat()},
         "as_of": now.isoformat(),
         "on_chain_action": "none",
@@ -132,7 +152,7 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
 def network_status(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     health = _rpc("getHealth", {}, settings)
-    return {"network": settings.network_passphrase, "rpc_url": settings.soroban_rpc_url,
+    return {"network": settings.network_passphrase, "rpc_url": _public_endpoint(settings.soroban_rpc_url),
             "status": health.get("status", "unknown"), "latest_ledger": health.get("latestLedger"),
             "oldest_ledger": health.get("oldestLedger"),
             "ledger_retention_window": health.get("ledgerRetentionWindow"),
@@ -186,5 +206,5 @@ def list_flag_events(limit: int, cursor: str | None = None, settings: Settings |
                        "subject": topics[2] if len(topics) > 2 else None, "score": _native(event.get("value")),
                        "contract_id": event.get("contractId", settings.contract_id), "tx_hash": event.get("txHash")})
     return {"events": output, "next_cursor": result.get("cursor"),
-            "source": {"rpc_url": settings.soroban_rpc_url, "network": settings.network_passphrase,
+            "source": {"rpc_url": _public_endpoint(settings.soroban_rpc_url), "network": settings.network_passphrase,
                        "contract_id": settings.contract_id}}
