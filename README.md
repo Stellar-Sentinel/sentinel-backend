@@ -56,6 +56,8 @@ uvicorn app.main:app --reload
 
 Open [http://localhost:8000/docs](http://localhost:8000/docs). Set the frontend's `NEXT_PUBLIC_API_BASE_URL` to this API origin and allow the frontend origin in `CORS_ORIGINS`.
 
+For private deployments, set a random `API_KEY` of at least 32 characters and send it as `Authorization: Bearer <API_KEY>` to business API routes. `/health`, API documentation, and CORS preflight remain accessible. Leave `API_KEY` empty for local development.
+
 ## Commands
 
 | Command | Purpose |
@@ -90,15 +92,16 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `RISK_HIGH_SCORE_THRESHOLD` / `RISK_ELEVATED_SCORE_THRESHOLD` | `70` / `40` | High and elevated risk-level boundaries; high must exceed elevated. |
 | `EVENTS_LOOKBACK_LEDGERS` | `50000` | First-page event search window, clamped to RPC retention. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
+| `API_KEY` | empty | Optional bearer key for business API routes; use at least 32 random characters when enabled. |
 | `SCREENING_RATE_LIMIT_REQUESTS` | `30` | Maximum account-screening requests per client in the configured window. |
 | `SCREENING_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length for screening requests. |
 | `TRUSTED_PROXY_CIDRS` | empty | Comma-separated IPs/CIDRs of reverse proxies allowed to supply `X-Forwarded-For`. |
-
-Only `POST /risk/score` is rate-limited; health, events, and network status remain available. A client that exceeds its quota receives HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. The limiter uses an in-memory sliding window per application process, so deployments with multiple workers or replicas should enforce a shared limit at their gateway. Forwarded client addresses are used only when the direct peer matches `TRUSTED_PROXY_CIDRS`; configure the exact proxy ranges and ensure the proxy overwrites or appends `X-Forwarded-For` correctly. With no trusted ranges configured, the middleware uses the direct peer address and ignores forwarded headers.
 | `EVENT_STORE_PATH` | `./data/events.sqlite3` | SQLite file used for indexed Soroban flag history and the resume cursor. |
 | `EVENT_INGEST_INTERVAL_SECONDS` | `30` | Delay between event-indexing polls while the app is running. |
 
-Do not commit `.env`, account secrets, signing keys, or tokens. The current service requires no secrets.
+Only `POST /risk/score` is rate-limited; health, events, and network status remain available. A client that exceeds its quota receives HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. The limiter uses an in-memory sliding window per application process, so deployments with multiple workers or replicas should enforce a shared limit at their gateway. Forwarded client addresses are used only when the direct peer matches `TRUSTED_PROXY_CIDRS`; configure the exact proxy ranges and ensure the proxy overwrites or appends `X-Forwarded-For` correctly. With no trusted ranges configured, the middleware uses the direct peer address and ignores forwarded headers.
+
+Do not commit `.env`, account secrets, signing keys, or tokens. `API_KEY` is optional for local development and should be configured for private deployments.
 
 Upstream retry behavior applies only to read-only Horizon requests and Soroban RPC calls. It retries transport errors and selected transient statuses, respects numeric or HTTP-date `Retry-After` values within the configured cap, and leaves client errors and JSON-RPC application errors untouched.
 

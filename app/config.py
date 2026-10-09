@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     risk_elevated_score_threshold: int = Field(default=40, ge=0, le=99)
     events_lookback_ledgers: int = Field(default=50_000, ge=1, le=1_000_000)
     cors_origins: str = "http://localhost:3000"
+    api_key: str = ""
     screening_rate_limit_requests: int = Field(default=30, gt=0, le=10_000)
     screening_rate_limit_window_seconds: int = Field(default=60, gt=0, le=86_400)
     trusted_proxy_cidrs: str = ""

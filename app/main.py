@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
+from app.middleware.api_key import ApiKeyMiddleware
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
 from app.routers import accounts, health, events, risk
@@ -71,6 +72,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
     expose_headers=["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
 )
+if settings.api_key:
+    app.add_middleware(ApiKeyMiddleware, api_key=settings.api_key)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
