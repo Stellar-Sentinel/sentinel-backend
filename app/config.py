@@ -1,6 +1,7 @@
 from functools import lru_cache
+from ipaddress import ip_network
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,25 @@ class Settings(BaseSettings):
     risk_elevated_score_threshold: int = Field(default=40, ge=0, le=99)
     events_lookback_ledgers: int = 50_000
     cors_origins: str = "http://localhost:3000"
+    screening_rate_limit_requests: int = Field(default=30, gt=0, le=10_000)
+    screening_rate_limit_window_seconds: int = Field(default=60, gt=0, le=86_400)
+    trusted_proxy_cidrs: str = ""
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, value: str) -> str:
+        for item in value.split(","):
+            item = item.strip()
+            if item:
+                ip_network(item, strict=False)
+        return value
+
+    @property
+    def trusted_proxy_networks(self):
+        return [ip_network(item.strip(), strict=False)
+                for item in self.trusted_proxy_cidrs.split(",") if item.strip()]
+    event_store_path: str = "./data/events.sqlite3"
+    event_ingest_interval_seconds: int = Field(default=30, gt=0, le=86_400)
 
     @model_validator(mode="after")
     def validate_risk_score_bands(self):
