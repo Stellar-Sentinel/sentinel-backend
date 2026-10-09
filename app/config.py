@@ -11,12 +11,12 @@ class Settings(BaseSettings):
     network_passphrase: str = "Test SDF Network ; September 2015"
     contract_id: str = ""
     environment: str = "development"
-    request_timeout_seconds: float = 8.0
+    request_timeout_seconds: float = Field(default=8.0, ge=0.1, le=60)
     upstream_max_retries: int = Field(default=2, ge=0, le=3)
     upstream_retry_backoff_seconds: float = Field(default=0.2, ge=0, le=1)
     upstream_retry_after_cap_seconds: float = Field(default=2.0, gt=0, le=5)
-    operation_scan_limit: int = 200
-    activity_window_days: int = 7
+    operation_scan_limit: int = Field(default=200, ge=1, le=1_000)
+    activity_window_days: int = Field(default=7, ge=1, le=365)
     risk_policy_version: str = Field(default="1.0.0", pattern=r"^\d+\.\d+\.\d+$")
     risk_activity_burst_min_operations: int = Field(default=50, ge=1, le=2_000)
     risk_activity_burst_points: int = Field(default=25, ge=0, le=100)
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     risk_low_sequence_points: int = Field(default=15, ge=0, le=100)
     risk_high_score_threshold: int = Field(default=70, ge=1, le=100)
     risk_elevated_score_threshold: int = Field(default=40, ge=0, le=99)
-    events_lookback_ledgers: int = 50_000
+    events_lookback_ledgers: int = Field(default=50_000, ge=1, le=1_000_000)
     cors_origins: str = "http://localhost:3000"
     screening_rate_limit_requests: int = Field(default=30, gt=0, le=10_000)
     screening_rate_limit_window_seconds: int = Field(default=60, gt=0, le=86_400)
