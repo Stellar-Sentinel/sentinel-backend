@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -6,15 +7,52 @@ from fastapi import HTTPException
 from app import stellar
 from app.config import Settings
 from app.main import app
+from app.stellar_address import is_valid_account_id
 
 client = TestClient(app)
-ADDRESS = "G" + "A" * 55
+
+
+def make_strkey(version: int, payload: bytes) -> str:
+    data = bytes([version]) + payload
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return base64.b32encode(data + crc.to_bytes(2, "little")).decode("ascii").rstrip("=")
+
+
+ADDRESS = make_strkey(48, bytes([1]) * 32)
+MUXED_ADDRESS = make_strkey(96, bytes([2]) * 40)
 
 
 def test_health_and_cors():
     assert client.get("/health").json() == {"status": "ok"}
     response = client.options("/risk/score", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"})
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
+    assert is_valid_account_id(ADDRESS)
+    assert is_valid_account_id(MUXED_ADDRESS)
+    assert len(ADDRESS) == 56
+    assert len(MUXED_ADDRESS) == 69
+
+    def fake_get(url, params=None, settings=None):
+        if url.endswith("/accounts/" + MUXED_ADDRESS):
+            return {"sequence": "10", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS):
+            return {"sequence": "10", "balances": []}
+        return {"_embedded": {"records": []}}
+
+    monkeypatch.setattr(stellar, "_get", fake_get)
+    response = client.post("/risk/score", json={"address": MUXED_ADDRESS})
+    assert response.status_code == 200
+    assert response.json()["address"] == MUXED_ADDRESS
+
+    corrupted = MUXED_ADDRESS[:-2] + ("A" if MUXED_ADDRESS[-2] != "A" else "B") + MUXED_ADDRESS[-1]
+    assert not is_valid_account_id(corrupted)
+    assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
 
 
 def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeypatch):

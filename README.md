@@ -3,6 +3,7 @@
 [![CI](https://github.com/Stellar-Sentinel/sentinel-backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Stellar-Sentinel/sentinel-backend/actions/workflows/ci.yml)
 
 Read-only FastAPI service for screening Stellar accounts and reading Soroban contract events. It fetches account activity from Horizon, exposes network status and events from Stellar RPC, and does not hold signing keys or submit transactions. Screening scores are transparent heuristics, not proof of fraud or financial/compliance advice.
+The screening endpoint accepts checksum-validated classic (`G...`) and muxed (`M...`) Stellar account IDs and forwards them unchanged to Horizon.
 
 ## Architecture
 
