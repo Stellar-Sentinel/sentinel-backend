@@ -25,7 +25,7 @@ flowchart LR
   Contract[Soroban Sentinel contract] -->|flagged events| RPC
 ```
 
-The backend is an event reader, not a transaction writer. The example configuration points to the current Testnet deployment. Set `CONTRACT_ID` to a deployed contract on the selected network; without it, `/events` returns HTTP 503 rather than fabricated data. The service indexes new events into a local SQLite database while running, and `/events` returns the stored history with the existing response fields.
+The backend is an event reader, not a transaction writer. The example configuration points to the current Testnet deployment. Set `CONTRACT_ID` to a deployed contract on the selected network; without it, `/events` returns HTTP 503 rather than fabricated data. The service indexes new events into a local SQLite database while running, decodes both `flagged` and digest-bearing `flaggedv2` events, and returns the stored history.
 
 `GET /accounts/{address}/operations?limit=20&cursor=...` returns a page of normalized Horizon operations. The page contains the operation ID/type, creation time, transaction hash, participating accounts, and an `amounts` array. Each amount keeps its own asset type, code, and issuer; path payments may return separate source and destination amounts. `next_cursor` is an opaque token for the following page and is `null` when the current page is short. Page size is limited to 1–100. These values are descriptive activity data and do not alter the risk score.
 

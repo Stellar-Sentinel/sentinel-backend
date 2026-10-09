@@ -350,15 +350,24 @@ def test_events_filter_and_decode(monkeypatch):
         calls.append((method, params))
         if method == "getHealth":
             return {"latestLedger": 100000, "oldestLedger": 80000}
-        return {"events": [{"id": "id1", "ledger": 99999, "ledgerClosedAt": "now", "contractId": selected.contract_id,
-                            "topic": [{"symbol": "flagged"}, {"address": {"accountId": "agent"}},
-                                      {"address": {"accountId": "subject"}}], "value": {"u32": 82}}], "cursor": "opaque"}
+        digest = "ABCDEF0123456789" * 4
+        return {"events": [
+            {"id": "id1", "ledger": 99999, "ledgerClosedAt": "now", "contractId": selected.contract_id,
+             "topic": [{"symbol": "flagged"}, {"address": {"accountId": "agent"}},
+                       {"address": {"accountId": "subject"}}], "value": {"u32": 82}},
+            {"id": "id2", "ledger": 99999, "ledgerClosedAt": "now", "contractId": selected.contract_id,
+             "topic": [{"symbol": "flaggedv2"}, {"address": {"accountId": "agent"}},
+                       {"address": {"accountId": "subject"}}, {"bytes": digest}], "value": {"u32": 91}},
+        ], "cursor": "opaque"}
     monkeypatch.setattr(stellar, "_rpc", fake_rpc)
     result = stellar.list_flag_events(15, settings=settings)
     assert result["events"][0]["agent"] == "agent"
     assert result["events"][0]["subject"] == "subject"
     assert result["events"][0]["score"] == 82
+    assert result["events"][0]["report_digest"] is None
+    assert result["events"][1]["report_digest"] == "abcdef0123456789" * 4
     assert calls[1][1]["filters"][0]["contractIds"] == [settings.contract_id]
+    assert len(calls[1][1]["filters"]) == 2
     assert calls[1][1]["startLedger"] == 80000
     assert result["next_cursor"] == "opaque"
 

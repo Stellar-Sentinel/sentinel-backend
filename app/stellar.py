@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import base64
 import copy
 from collections import OrderedDict
+import re
 from urllib.parse import urlsplit, urlunsplit
 from email.utils import parsedate_to_datetime
 import time
@@ -519,14 +520,26 @@ def _native(value):
     return value
 
 
+def _bytes32_hex(value) -> str | None:
+    if isinstance(value, dict):
+        value = value.get("bytes")
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        return value.lower()
+    return None
+
+
 def fetch_flag_event_page(limit: int, cursor: str | None = None,
                           settings: Settings | None = None) -> tuple[list[dict], str | None]:
     settings = settings or get_settings()
     if not settings.contract_id:
         raise HTTPException(status_code=503, detail="CONTRACT_ID is required to read Stellar Sentinel on-chain events")
     params = {
-        "filters": [{"type": "contract", "contractIds": [settings.contract_id],
-                     "topics": [[_symbol_scval("flagged"), "*", "*", "**"]]}],
+        "filters": [
+            {"type": "contract", "contractIds": [settings.contract_id],
+             "topics": [[_symbol_scval("flagged"), "*", "*", "**"]]},
+            {"type": "contract", "contractIds": [settings.contract_id],
+             "topics": [[_symbol_scval("flaggedv2"), "*", "*", "*"]]},
+        ],
         "pagination": {"limit": limit},
         "xdrFormat": "json",
     }
@@ -542,9 +555,11 @@ def fetch_flag_event_page(limit: int, cursor: str | None = None,
     output = []
     for event in result.get("events", []):
         topics = [_native(topic) for topic in event.get("topic", event.get("topics", []))]
+        is_v2 = bool(topics) and topics[0] == "flaggedv2"
         output.append({"id": event.get("id"), "ledger": event.get("ledger"),
                        "created_at": event.get("ledgerClosedAt"), "agent": topics[1] if len(topics) > 1 else None,
                        "subject": topics[2] if len(topics) > 2 else None, "score": _native(event.get("value")),
+                       "report_digest": _bytes32_hex(topics[3]) if is_v2 and len(topics) > 3 else None,
                        "contract_id": event.get("contractId", settings.contract_id), "tx_hash": event.get("txHash")})
     return output, result.get("cursor")
 
