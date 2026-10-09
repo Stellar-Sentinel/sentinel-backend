@@ -134,7 +134,7 @@ def test_risk_thresholds_and_weights_are_configurable_and_bounded(monkeypatch):
     assert result["risk_level"] == "high"
     assert result["threshold"] == 60
     assert result["threshold_exceeded"] is True
-    assert "at least 1 operations" in result["signals"][0]["explanation"]
+    assert "At least 1 operation was observed" in result["signals"][0]["explanation"]
 
 
 def test_events_requires_contract_id():
@@ -222,11 +222,19 @@ def test_upstream_requests_use_one_managed_client():
 
         def get(self, url, **kwargs):
             self.calls.append(("GET", url, kwargs))
-            return httpx.Response(200, json={"fee_stats": True})
+            return httpx.Response(
+                200,
+                json={"fee_stats": True},
+                request=httpx.Request("GET", url),
+            )
 
         def post(self, url, **kwargs):
             self.calls.append(("POST", url, kwargs))
-            return httpx.Response(200, json={"result": {"status": "healthy"}})
+            return httpx.Response(
+                200,
+                json={"result": {"status": "healthy"}},
+                request=httpx.Request("POST", url),
+            )
 
         def close(self):
             self.closed = True

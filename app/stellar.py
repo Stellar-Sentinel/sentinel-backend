@@ -237,10 +237,13 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
                         "source": "Stellar Horizon account operations", "window": f"last {settings.activity_window_days} days"})
 
     if len(recent) >= settings.risk_activity_burst_min_operations:
+        operation_count = settings.risk_activity_burst_min_operations
+        operation_noun = "operation" if operation_count == 1 else "operations"
+        operation_verb = "was" if operation_count == 1 else "were"
         add_signal(
             "activity_burst", "High recent operation count", len(recent), "elevated",
             settings.risk_activity_burst_points,
-            f"At least {settings.risk_activity_burst_min_operations} operations were observed within the screening window.",
+            f"At least {operation_count} {operation_noun} {operation_verb} observed within the screening window.",
         )
     if volume >= settings.risk_transfer_volume_xlm_threshold:
         add_signal(
