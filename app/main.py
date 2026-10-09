@@ -2,12 +2,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
-from app.stellar import network_status, sync_flag_events
+from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
 from app.routers import accounts, health, events, risk
+from app.request_logging import RequestLoggingMiddleware
 from app.event_store import get_event_store
 
 settings = get_settings()
@@ -28,6 +30,11 @@ async def _ingest_events_forever():
 
 @asynccontextmanager
 async def lifespan(_app):
+    client = httpx.Client(
+        timeout=settings.request_timeout_seconds,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    )
+    set_http_client(client)
     task = asyncio.create_task(_ingest_events_forever())
     try:
         yield
@@ -37,6 +44,8 @@ async def lifespan(_app):
             await task
         except asyncio.CancelledError:
             pass
+        close_http_client()
+
 
 app = FastAPI(
     title="Stellar Sentinel API",
@@ -60,6 +69,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
     expose_headers=["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
 )
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(health.router)
 app.include_router(accounts.router, prefix="/accounts", tags=["accounts"])
