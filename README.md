@@ -75,4 +75,4 @@ Do not commit `.env`, account secrets, signing keys, or tokens. The current serv
 
 ## Data and scoring limits
 
-The score uses a bounded sample of recent Horizon operations, up to 200, and fixed baseline thresholds. It is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
+The score uses a bounded sample of recent Horizon operations, up to 200, and fixed baseline thresholds. The response's `activity_sample` reports the effective scan cap, actual records scanned, and whether the result may be incomplete because it reached the cap. Scores use observed activity rather than complete account history. This is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
