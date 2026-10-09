@@ -23,7 +23,13 @@ class ScreeningMetricsResponse(BaseModel):
     distinct_counterparties: int
     account_sequence: int
     native_xlm_balance: float
+    trustline_count: int
     window_days: int
+
+
+class AssetBalanceResponse(BaseModel):
+    asset: dict[str, Any]
+    balance: str
 
 
 class ScreeningSourceResponse(BaseModel):
@@ -60,8 +66,10 @@ class ScreeningResponse(BaseModel):
             "distinct_counterparties": 4,
             "account_sequence": 16,
             "native_xlm_balance": 240.0,
+            "trustline_count": 3,
             "window_days": 7,
         },
+        "assets": [{"asset": {"type": "native", "code": "XLM"}, "balance": "240.0"}],
         "source": {
             "horizon_url": "https://horizon-testnet.stellar.org",
             "network": "Test SDF Network ; September 2015",
@@ -80,6 +88,7 @@ class ScreeningResponse(BaseModel):
     activity_sample: ActivitySampleResponse | None = None
     signals: list[RiskSignalResponse]
     metrics: ScreeningMetricsResponse
+    assets: list[AssetBalanceResponse] = Field(default_factory=list)
     source: ScreeningSourceResponse
     as_of: str
     on_chain_action: Literal["none"]
