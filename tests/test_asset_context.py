@@ -6,7 +6,7 @@ from app.main import app
 
 
 client = TestClient(app)
-ADDRESS = "G" + "A" * 55
+ADDRESS = "GAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQDZ7H"
 
 
 @pytest.fixture(autouse=True)

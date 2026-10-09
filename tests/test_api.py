@@ -10,9 +10,11 @@ from app import stellar
 from app.config import Settings
 from app.models import EventsResponse, NetworkStatusResponse, ScreeningResponse
 from app.main import app
+from app.stellar_address import is_valid_account_id
 
 client = TestClient(app)
-ADDRESS = "G" + "A" * 55
+ADDRESS = "GAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQDZ7H"
+MUXED_ADDRESS = "MABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAKBZQ"
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +53,29 @@ def test_request_id_is_propagated_or_generated():
     rejected = client.get("/health", headers={"X-Request-ID": "bad id"})
     assert rejected.headers["x-request-id"] != "bad id"
     assert len(rejected.headers["x-request-id"]) == 32
+
+
+def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
+    assert is_valid_account_id(ADDRESS)
+    assert is_valid_account_id(MUXED_ADDRESS)
+    assert len(ADDRESS) == 56
+    assert len(MUXED_ADDRESS) == 69
+
+    def fake_get(url, params=None, settings=None):
+        if url.endswith("/accounts/" + MUXED_ADDRESS):
+            return {"sequence": "10", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS):
+            return {"sequence": "10", "balances": []}
+        return {"_embedded": {"records": []}}
+
+    monkeypatch.setattr(stellar, "_get", fake_get)
+    response = client.post("/risk/score", json={"address": MUXED_ADDRESS})
+    assert response.status_code == 200
+    assert response.json()["address"] == MUXED_ADDRESS
+
+    corrupted = MUXED_ADDRESS[:-2] + ("A" if MUXED_ADDRESS[-2] != "A" else "B") + MUXED_ADDRESS[-1]
+    assert not is_valid_account_id(corrupted)
+    assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
 
 
 def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
