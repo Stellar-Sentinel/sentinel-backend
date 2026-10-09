@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app import stellar
 from app.config import Settings
+from app.models import EventsResponse, NetworkStatusResponse, ScreeningResponse
 from app.main import app
 
 client = TestClient(app)
@@ -20,6 +21,18 @@ def test_health_and_cors():
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
+def test_public_response_models_are_documented_with_examples():
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+
+    assert schemas["ScreeningResponse"]["examples"]
+    assert schemas["EventsResponse"]["examples"]
+    assert schemas["NetworkStatusResponse"]["examples"]
+
+    assert ScreeningResponse.model_fields["score"].annotation is int
+    assert ScreeningResponse.model_fields["scoring_policy_version"].default == "1.0.0"
+    assert "activity_sample" in ScreeningResponse.model_fields
+    assert "events" in EventsResponse.model_fields
+    assert "status" in NetworkStatusResponse.model_fields
 def test_request_id_is_propagated_or_generated():
     accepted = client.get("/health", headers={"X-Request-ID": "trace_123-abc"})
     assert accepted.headers["x-request-id"] == "trace_123-abc"

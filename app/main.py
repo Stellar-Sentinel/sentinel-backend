@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
 from app.routers import accounts, health, events, risk
+from app.models import NetworkStatusResponse
 from app.request_id import RequestIDMiddleware
 from app.request_logging import RequestLoggingMiddleware
 from app.event_store import get_event_store
@@ -79,7 +80,7 @@ app.include_router(events.router, prefix="/events", tags=["events"])
 app.include_router(risk.router, prefix="/risk", tags=["risk"])
 
 
-@app.get("/network/status", tags=["network"])
+@app.get("/network/status", tags=["network"], response_model=NetworkStatusResponse)
 def get_network_status():
     """Report Soroban RPC health and the RPC's current retained ledger window."""
     return network_status()

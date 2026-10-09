@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 
+from app.models import EventsResponse
 from app.config import get_settings
 from app.event_store import get_event_store
 from app.stellar import sync_flag_events
@@ -7,7 +8,7 @@ from app.stellar import sync_flag_events
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/", response_model=EventsResponse)
 def list_events(limit: int = Query(20, ge=1, le=100), cursor: str | None = Query(None, min_length=1, max_length=512)):
     """Read indexed `flagged` events and advance ingestion from Soroban RPC."""
     settings = get_settings()
