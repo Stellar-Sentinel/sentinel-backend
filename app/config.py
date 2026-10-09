@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     upstream_retry_after_cap_seconds: float = Field(default=2.0, gt=0, le=5)
     operation_scan_limit: int = Field(default=200, ge=1, le=1_000)
     activity_window_days: int = Field(default=7, ge=1, le=365)
+    screening_cache_ttl_seconds: int = Field(default=15, ge=0, le=300)
+    screening_cache_max_entries: int = Field(default=256, ge=1, le=10_000)
     risk_policy_version: str = Field(default="1.0.0", pattern=r"^\d+\.\d+\.\d+$")
     risk_activity_burst_min_operations: int = Field(default=50, ge=1, le=2_000)
     risk_activity_burst_points: int = Field(default=25, ge=0, le=100)

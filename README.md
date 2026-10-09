@@ -84,6 +84,7 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `UPSTREAM_RETRY_AFTER_CAP_SECONDS` | `2.0` | Maximum delay honored from `Retry-After` or computed backoff; maximum is 5 seconds. |
 | `OPERATION_SCAN_LIMIT` | `200` | Maximum recent operations examined across Horizon pages; hard maximum is 1,000 and each page contains at most 200. |
 | `ACTIVITY_WINDOW_DAYS` | `7` | Recent activity screening window. |
+| `SCREENING_CACHE_TTL_SECONDS` / `SCREENING_CACHE_MAX_ENTRIES` | `15` / `256` | Successful screening response cache TTL and in-process entry limit. Set TTL to `0` to disable. |
 | `RISK_POLICY_VERSION` | `1.0.0` | Semantic version returned with each screening result; bump when scoring semantics change. |
 | `RISK_ACTIVITY_BURST_MIN_OPERATIONS` / `RISK_ACTIVITY_BURST_POINTS` | `50` / `25` | Operation-count signal cutoff and points. |
 | `RISK_TRANSFER_VOLUME_XLM_THRESHOLD` / `RISK_TRANSFER_VOLUME_POINTS` | `10000` / `25` | Native XLM volume signal cutoff and points. |
@@ -110,6 +111,8 @@ The SQLite database creates `flag_events(scope, event_id, ledger, created_at, ag
 ## Data and scoring limits
 
 The score uses a bounded sample of recent Horizon operations across pages, up to the configured `OPERATION_SCAN_LIMIT` (maximum 1,000). The response's `activity_sample` reports the effective scan cap, actual records scanned, and whether the result may be incomplete because it reached the cap. Scoring uses configurable, validated signal thresholds and weights; the final score is capped at 100. Scores use observed activity rather than complete account history. This is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
+
+Successful screening responses may be cached in-process for `SCREENING_CACHE_TTL_SECONDS` (default 15), keyed by network, Horizon URL, account, and active settings. The cache is bounded by `SCREENING_CACHE_MAX_ENTRIES` (default 256); set the TTL to `0` to disable it. Each application worker has its own cache.
 
 Screening responses include `scoring_policy_version`. Set `RISK_POLICY_VERSION` to a semantic version and bump it when scoring signal meaning or scoring rules change; operational configuration should label any customized policy with its own version.
 

@@ -1,10 +1,13 @@
 """Read-only clients for Horizon and Stellar RPC."""
 from datetime import datetime, timedelta, timezone
 import base64
+import copy
+from collections import OrderedDict
 from urllib.parse import urlsplit, urlunsplit
 from email.utils import parsedate_to_datetime
 import time
 import math
+import threading
 
 import httpx
 from fastapi import HTTPException
@@ -13,6 +16,43 @@ from app.config import Settings, get_settings
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 HORIZON_OPERATION_PAGE_SIZE = 200
+_screening_cache = OrderedDict()
+_screening_cache_lock = threading.Lock()
+
+
+def clear_screening_cache() -> None:
+    """Clear the bounded in-process screening cache."""
+    with _screening_cache_lock:
+        _screening_cache.clear()
+
+
+def _cached_screening(key: tuple, ttl_seconds: int):
+    if ttl_seconds <= 0:
+        return None
+    now = time.monotonic()
+    with _screening_cache_lock:
+        entry = _screening_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, result = entry
+        if expires_at <= now:
+            del _screening_cache[key]
+            return None
+        _screening_cache.move_to_end(key)
+        return copy.deepcopy(result)
+
+
+def _store_screening(key: tuple, result: dict, settings: Settings) -> None:
+    if settings.screening_cache_ttl_seconds <= 0:
+        return
+    with _screening_cache_lock:
+        _screening_cache[key] = (
+            time.monotonic() + settings.screening_cache_ttl_seconds,
+            copy.deepcopy(result),
+        )
+        _screening_cache.move_to_end(key)
+        while len(_screening_cache) > settings.screening_cache_max_entries:
+            _screening_cache.popitem(last=False)
 
 
 def _retry_after_seconds(response: httpx.Response, settings: Settings, attempt: int) -> float:
@@ -249,6 +289,21 @@ def _scan_account_operations(address: str, settings: Settings) -> tuple[list[dic
 
 def score_account(address: str, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
+    key = (
+        settings.network_passphrase,
+        settings.horizon_url.rstrip("/"),
+        address,
+        settings.model_dump_json(),
+    )
+    cached = _cached_screening(key, settings.screening_cache_ttl_seconds)
+    if cached is not None:
+        return cached
+    result = _score_account_uncached(address, settings)
+    _store_screening(key, result, settings)
+    return copy.deepcopy(result)
+
+
+def _score_account_uncached(address: str, settings: Settings) -> dict:
     account = _get(f"{settings.horizon_url.rstrip('/')}/accounts/{address}", settings=settings)
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=settings.activity_window_days)

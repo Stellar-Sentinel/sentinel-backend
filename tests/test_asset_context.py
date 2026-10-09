@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from app import stellar
 from app.main import app
@@ -6,6 +7,13 @@ from app.main import app
 
 client = TestClient(app)
 ADDRESS = "G" + "A" * 55
+
+
+@pytest.fixture(autouse=True)
+def reset_screening_cache():
+    stellar.clear_screening_cache()
+    yield
+    stellar.clear_screening_cache()
 
 
 def test_score_returns_distinct_native_and_issued_asset_context(monkeypatch):
@@ -90,11 +98,13 @@ def test_score_handles_empty_and_malformed_asset_records(monkeypatch):
 
     monkeypatch.setattr(stellar, "_get", fake_get)
     with_assets = client.post("/risk/score", json={"address": ADDRESS}).json()
+    stellar.clear_screening_cache()
     assert with_assets["metrics"]["trustline_count"] == 0
     assert with_assets["metrics"]["native_xlm_balance"] == 20
     assert with_assets["assets"][0]["asset"]["code"] == "XLM"
 
     malformed = client.post("/risk/score", json={"address": ADDRESS}).json()
+    stellar.clear_screening_cache()
     assert malformed["assets"] == []
     assert malformed["metrics"]["trustline_count"] == 0
     assert malformed["metrics"]["native_xlm_balance"] == 0
