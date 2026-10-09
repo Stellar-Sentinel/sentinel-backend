@@ -68,6 +68,11 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `REQUEST_TIMEOUT_SECONDS` | `8.0` | Outbound HTTP timeout. |
 | `OPERATION_SCAN_LIMIT` | `200` | Maximum recent operations examined (Horizon limit is 200). |
 | `ACTIVITY_WINDOW_DAYS` | `7` | Recent activity screening window. |
+| `RISK_ACTIVITY_BURST_MIN_OPERATIONS` / `RISK_ACTIVITY_BURST_POINTS` | `50` / `25` | Operation-count signal cutoff and points. |
+| `RISK_TRANSFER_VOLUME_XLM_THRESHOLD` / `RISK_TRANSFER_VOLUME_POINTS` | `10000` / `25` | Native XLM volume signal cutoff and points. |
+| `RISK_COUNTERPARTY_MIN_COUNT` / `RISK_COUNTERPARTY_POINTS` | `20` / `25` | Distinct-counterparty signal cutoff and points. |
+| `RISK_LOW_SEQUENCE_MAX` / `RISK_LOW_SEQUENCE_POINTS` | `5` / `15` | Low-sequence signal cutoff and points. |
+| `RISK_HIGH_SCORE_THRESHOLD` / `RISK_ELEVATED_SCORE_THRESHOLD` | `70` / `40` | High and elevated risk-level boundaries; high must exceed elevated. |
 | `EVENTS_LOOKBACK_LEDGERS` | `50000` | First-page event search window, clamped to RPC retention. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
 
@@ -75,4 +80,4 @@ Do not commit `.env`, account secrets, signing keys, or tokens. The current serv
 
 ## Data and scoring limits
 
-The score uses a bounded sample of recent Horizon operations, up to 200, and fixed baseline thresholds. It is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.
+The score uses a bounded sample of recent Horizon operations, up to 200, with configurable, validated signal thresholds and weights. Defaults preserve the documented baseline behavior; the final score is capped at 100. It is not a trained model. RPC event history is provider-limited and is not a complete archive. Configure a persistent indexer for long-term event history.

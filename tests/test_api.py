@@ -35,6 +35,38 @@ def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeyp
     assert client.post("/risk/score", json={"address": ADDRESS, "recent_tx_count": 10}).status_code == 422
 
 
+def test_risk_thresholds_and_weights_are_configurable_and_bounded(monkeypatch):
+    recent = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
+        {"sequence": "50", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS)
+        else {"_embedded": {"records": [{
+            "created_at": recent,
+            "type": "payment",
+            "source_account": ADDRESS,
+            "to": "G" + "B" * 55,
+            "asset_type": "native",
+            "amount": "120",
+        }]}}
+    ))
+    settings = Settings(
+        risk_activity_burst_min_operations=1,
+        risk_activity_burst_points=50,
+        risk_transfer_volume_xlm_threshold=100,
+        risk_transfer_volume_points=80,
+        risk_high_score_threshold=60,
+        risk_elevated_score_threshold=30,
+    )
+
+    result = stellar.score_account(ADDRESS, settings=settings)
+
+    assert result["score"] == 100
+    assert result["risk_level"] == "high"
+    assert result["threshold"] == 60
+    assert result["threshold_exceeded"] is True
+    assert "at least 1 operations" in result["signals"][0]["explanation"]
+
+
 def test_events_requires_contract_id():
     monkeypatch_settings = Settings(contract_id="")
     try:

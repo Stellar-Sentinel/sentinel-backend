@@ -87,34 +87,46 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
                         "points": points, "explanation": explanation,
                         "source": "Stellar Horizon account operations", "window": f"last {settings.activity_window_days} days"})
 
-    if len(recent) >= 50:
-        add_signal("activity_burst", "High recent operation count", len(recent), "elevated", 25,
-                   "At least 50 operations were observed within the screening window.")
-    if volume >= 10_000:
-        add_signal("transfer_volume", "High native XLM transfer volume", round(volume, 7), "elevated", 25,
-                   "Observed native XLM transfer volume reached 10,000 XLM in the window.")
-    if len(counterparties) >= 20:
-        add_signal("counterparty_spread", "Broad counterparty spread", len(counterparties), "elevated", 25,
-                   "At least 20 distinct counterparties appeared in observed transfer operations.")
+    if len(recent) >= settings.risk_activity_burst_min_operations:
+        add_signal(
+            "activity_burst", "High recent operation count", len(recent), "elevated",
+            settings.risk_activity_burst_points,
+            f"At least {settings.risk_activity_burst_min_operations} operations were observed within the screening window.",
+        )
+    if volume >= settings.risk_transfer_volume_xlm_threshold:
+        add_signal(
+            "transfer_volume", "High native XLM transfer volume", round(volume, 7), "elevated",
+            settings.risk_transfer_volume_points,
+            f"Observed native XLM transfer volume reached {settings.risk_transfer_volume_xlm_threshold:g} XLM in the window.",
+        )
+    if len(counterparties) >= settings.risk_counterparty_min_count:
+        add_signal(
+            "counterparty_spread", "Broad counterparty spread", len(counterparties), "elevated",
+            settings.risk_counterparty_points,
+            f"At least {settings.risk_counterparty_min_count} distinct counterparties appeared in observed transfer operations.",
+        )
     sequence = account.get("sequence", "0")
     # A low operation sequence is a weak context signal, not a conclusion about legitimacy.
     try:
         seq = int(sequence)
     except (TypeError, ValueError):
         seq = 0
-    if seq <= 5 and recent:
-        add_signal("new_account_activity", "Low sequence account with observed activity", seq, "review", 15,
-                   "The account has a low sequence number; this alone is not evidence of malicious behavior.")
+    if seq <= settings.risk_low_sequence_max and recent:
+        add_signal(
+            "new_account_activity", "Low sequence account with observed activity", seq, "review",
+            settings.risk_low_sequence_points,
+            f"The account sequence is at most {settings.risk_low_sequence_max}; this alone is not evidence of malicious behavior.",
+        )
 
     native_balance = next((float(item["balance"]) for item in account.get("balances", [])
                            if item.get("asset_type") == "native" and item.get("balance") is not None), 0.0)
 
     score = min(score, 100)
-    threshold = 70
+    threshold = settings.risk_high_score_threshold
     return {
         "address": address,
         "score": score,
-        "risk_level": "high" if score >= threshold else "elevated" if score >= 40 else "low",
+        "risk_level": "high" if score >= threshold else "elevated" if score >= settings.risk_elevated_score_threshold else "low",
         "threshold": threshold,
         "threshold_exceeded": score >= threshold,
         "signals": signals,
