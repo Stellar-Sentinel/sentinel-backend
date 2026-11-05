@@ -15,6 +15,7 @@ from app.models import NetworkStatusResponse
 from app.request_id import RequestIDMiddleware
 from app.request_logging import RequestLoggingMiddleware
 from app.event_store import get_event_store
+from app.agents.monitor import MonitoringAgent
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -32,6 +33,24 @@ async def _ingest_events_forever():
         await asyncio.sleep(settings.event_ingest_interval_seconds)
 
 
+async def _run_agent_forever():
+    if not (settings.agent_enabled and settings.agent_secret_key and settings.contract_id):
+        return
+    try:
+        agent = MonitoringAgent(settings)
+    except ValueError as exc:
+        logger.warning("Monitoring agent disabled: %s", exc)
+        return
+    while True:
+        try:
+            filed = await asyncio.to_thread(agent.run_once)
+            if filed:
+                logger.info("Monitoring agent filed %s flag(s) this cycle", filed)
+        except Exception as exc:
+            logger.warning("Monitoring agent cycle failed (%s)", type(exc).__name__)
+        await asyncio.sleep(settings.agent_poll_interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     client = httpx.Client(
@@ -39,15 +58,17 @@ async def lifespan(_app):
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     )
     set_http_client(client)
-    task = asyncio.create_task(_ingest_events_forever())
+    tasks = [asyncio.create_task(_ingest_events_forever()), asyncio.create_task(_run_agent_forever())]
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         close_http_client()
 
 
@@ -89,6 +110,3 @@ app.include_router(risk.router, prefix="/risk", tags=["risk"])
 def get_network_status():
     """Report Soroban RPC health and the RPC's current retained ledger window."""
     return network_status()
-
-# TODO(#issue): no request logging middleware yet — every request should be
-# logged as structured JSON (method, path, status, latency_ms).

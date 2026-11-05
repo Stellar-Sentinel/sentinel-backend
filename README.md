@@ -4,7 +4,7 @@ The screening endpoint accepts checksum-validated classic (`G...`) and muxed (`M
 
 [![CI](https://github.com/Stellar-Sentinel/sentinel-backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Stellar-Sentinel/sentinel-backend/actions/workflows/ci.yml)
 
-Read-only FastAPI service for screening Stellar accounts and reading Soroban contract events. It fetches account activity from Horizon, exposes network status and events from Stellar RPC, and does not hold signing keys or submit transactions. Screening scores are transparent heuristics, not proof of fraud or financial/compliance advice. The app reuses a bounded HTTP connection pool for the lifetime of the process and closes it during shutdown.
+FastAPI service for screening Stellar accounts and reading Soroban contract events. It fetches account activity from Horizon and exposes network status and events from Stellar RPC. By default it holds no signing keys and submits no transactions. Optionally, when `AGENT_ENABLED=true` and `AGENT_SECRET_KEY` are configured, it also runs a background monitoring agent (see below) that signs and submits `flag_anomaly_v2` calls with that dedicated key — no other code path ever signs anything. Screening scores are transparent heuristics, not proof of fraud or financial/compliance advice. The app reuses a bounded HTTP connection pool for the lifetime of the process and closes it during shutdown.
 
 Screening, network-status, and event routes publish Pydantic response schemas and representative examples in `/openapi.json`. Optional upstream event and ledger fields remain nullable.
 API responses include baseline browser security headers. Risk-score responses use `Cache-Control: no-store` because they contain account-specific screening results.
@@ -23,6 +23,8 @@ flowchart LR
   Score -->|account and recent operations| Horizon[Stellar Horizon]
   API -->|GET /events, /network/status| Reader[Soroban RPC reader]
   Reader --> RPC[Stellar RPC]
+  Agent[Monitoring agent, optional] -->|scores candidates via| Score
+  Agent -->|flag_anomaly_v2, signed| RPC
   Contract[Soroban Sentinel contract] -->|flagged events| RPC
 ```
 
@@ -34,7 +36,18 @@ Request logs are JSON records containing the method, route template, status, lat
 
 ### Current Testnet contract
 
-The configured contract is [`CCZAAZ3FJ7LKZA7E7A6EKQTU2HCNVI3YUVIHKWHSULGZSWAJFS2D2XVX`](https://stellar.expert/explorer/testnet/contract/CCZAAZ3FJ7LKZA7E7A6EKQTU2HCNVI3YUVIHKWHSULGZSWAJFS2D2XVX), initialized with threshold `70`. `GET /events` is connected to its Soroban RPC event stream and currently returns an empty event list; no monitoring agent has been authorized yet. See the contract repository's [Testnet deployment runbook](https://github.com/Stellar-Sentinel/sentinel-contracts#testnet-deployment) for transaction links and redeployment commands.
+The configured contract is [`CBVFEUGUZ3P7A3F6B3SZKFJRTSANHYZDGEOFRCRLQL3FG6QCDO7MBJD7`](https://stellar.expert/explorer/testnet/contract/CBVFEUGUZ3P7A3F6B3SZKFJRTSANHYZDGEOFRCRLQL3FG6QCDO7MBJD7), initialized with threshold `70`, running the current full contract interface (agent registry, role separation, pause/guardian controls, `flag_anomaly_v2`). `GET /events` is connected to its Soroban RPC event stream. See the contract repository's [Testnet deployment runbook](https://github.com/Stellar-Sentinel/sentinel-contracts#testnet-deployment) for transaction links and redeployment commands.
+
+### Monitoring agent
+
+`app/agents/monitor.py` implements an optional background agent, started from the FastAPI `lifespan` alongside event ingestion. Every `AGENT_POLL_INTERVAL_SECONDS` it:
+
+1. Reads the most recent `AGENT_SCAN_CANDIDATE_LIMIT` operations network-wide from Horizon (`GET /operations`, no account filter) and collects their distinct source accounts.
+2. Screens each candidate with the same `score_account` logic `POST /risk/score` uses.
+3. For any candidate whose score meets or exceeds `RISK_HIGH_SCORE_THRESHOLD`, signs and submits `flag_anomaly_v2(agent, subject, score, report_digest)` with `AGENT_SECRET_KEY`, where `report_digest` is the SHA-256 of compact, sort-keyed JSON of that result's `address`, `score`, `risk_level`, `threshold`, `scoring_policy_version`, and `as_of` fields — any off-chain verifier that wants to check a `flaggedv2` digest against a stored report must hash those same fields the same way.
+4. Tracks a per-address cooldown (`AGENT_FLAG_COOLDOWN_SECONDS`) in memory so a persistently high-scoring account isn't re-flagged every cycle; the cooldown resets on process restart.
+
+The agent is disabled unless both `AGENT_ENABLED=true` and `AGENT_SECRET_KEY` are set, and it logs a warning and stays disabled (without crashing the app) if `CONTRACT_ID` is also missing. **Its key must already be authorized as a responder on the contract** (admin-only `authorize_responder`, documented in the [contracts README](https://github.com/Stellar-Sentinel/sentinel-contracts#contract-interface)) before any submission will succeed — the agent itself cannot grant its own authorization. A scoring failure or a failed/unconfirmed transaction for one candidate is logged and skipped; it never stops the poll loop.
 
 ## Project layout
 
@@ -42,7 +55,8 @@ The configured contract is [`CCZAAZ3FJ7LKZA7E7A6EKQTU2HCNVI3YUVIHKWHSULGZSWAJFS2
 - `app/config.py` — environment-backed settings.
 - `app/routers/` — health, screening, and event endpoints.
 - `app/stellar.py` — Horizon scoring data and Soroban RPC clients/event decoding.
-- `app/agents/pipeline.py` — standalone deterministic scoring utility; the HTTP screening route uses live Horizon data through `app/stellar.py`.
+- `app/agents/pipeline.py` — standalone deterministic scoring prototype kept for reference; not used by any route.
+- `app/agents/monitor.py` — optional background monitoring agent; scores recent network activity and files `flag_anomaly_v2` on the configured contract.
 - `tests/test_api.py` — mocked API tests; no external chain calls are required.
 
 ## Run locally
@@ -102,6 +116,11 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `TRUSTED_PROXY_CIDRS` | empty | Comma-separated IPs/CIDRs of reverse proxies allowed to supply `X-Forwarded-For`. |
 | `EVENT_STORE_PATH` | `./data/events.sqlite3` | SQLite file used for indexed Soroban flag history and the resume cursor. |
 | `EVENT_INGEST_INTERVAL_SECONDS` | `30` | Delay between event-indexing polls while the app is running. |
+| `AGENT_ENABLED` | `false` | Enables the background monitoring agent; also requires `AGENT_SECRET_KEY` and `CONTRACT_ID`. |
+| `AGENT_SECRET_KEY` | empty | Stellar secret seed the monitoring agent signs `flag_anomaly_v2` submissions with; must be authorized as a contract responder. Never commit a real value. |
+| `AGENT_POLL_INTERVAL_SECONDS` | `300` | Delay between monitoring-agent scan/flag cycles. |
+| `AGENT_SCAN_CANDIDATE_LIMIT` | `20` | Recent network-wide operations scanned per cycle to find candidate accounts. |
+| `AGENT_FLAG_COOLDOWN_SECONDS` | `3600` | Minimum time before the agent re-flags the same address; resets on restart. |
 
 Only `POST /risk/score` is rate-limited; health, events, and network status remain available. A client that exceeds its quota receives HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. The limiter uses an in-memory sliding window per application process, so deployments with multiple workers or replicas should enforce a shared limit at their gateway. Forwarded client addresses are used only when the direct peer matches `TRUSTED_PROXY_CIDRS`; configure the exact proxy ranges and ensure the proxy overwrites or appends `X-Forwarded-For` correctly. With no trusted ranges configured, the middleware uses the direct peer address and ignores forwarded headers.
 

@@ -146,6 +146,34 @@ def test_score_uses_horizon_data_and_returns_bounded_explainable_signals(monkeyp
     assert client.post("/risk/score", json={"address": ADDRESS, "recent_tx_count": 10}).status_code == 422
 
 
+def test_score_counts_create_account_destinations_as_counterparties(monkeypatch):
+    # create_account operations carry the new account as `account` (funder as
+    # `funder`/`source_account`); `to`/`from` are always null on this op type.
+    records = [
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "type": "create_account",
+            "source_account": ADDRESS,
+            "funder": ADDRESS,
+            "account": f"G{letter * 55}",
+            "to": None,
+            "from": None,
+            "starting_balance": "10000.0000000",
+        }
+        for letter in "BCDEFGHIJKLMNOPQRSTU"  # 20 distinct new accounts
+    ]
+    monkeypatch.setattr(stellar, "_get", lambda url, params=None, settings=None: (
+        {"sequence": "900", "balances": []}
+        if url.endswith("/accounts/" + ADDRESS)
+        else {"_embedded": {"records": records}}
+    ))
+
+    result = stellar.score_account(ADDRESS, settings=Settings())
+
+    assert result["metrics"]["distinct_counterparties"] == 20
+    assert any(signal["id"] == "counterparty_spread" for signal in result["signals"])
+
+
 def test_score_reports_when_operation_sample_reaches_limit(monkeypatch):
     record = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -356,13 +384,15 @@ def test_events_filter_and_decode(monkeypatch):
         if method == "getHealth":
             return {"latestLedger": 100000, "oldestLedger": 80000}
         digest = "ABCDEF0123456789" * 4
+        # Real Soroban RPC (xdrFormat="json") returns topicJson/valueJson with
+        # bare-string addresses, not the topic/value/nested-accountId shape.
         return {"events": [
             {"id": "id1", "ledger": 99999, "ledgerClosedAt": "now", "contractId": selected.contract_id,
-             "topic": [{"symbol": "flagged"}, {"address": {"accountId": "agent"}},
-                       {"address": {"accountId": "subject"}}], "value": {"u32": 82}},
+             "topicJson": [{"symbol": "flagged"}, {"address": "agent"},
+                           {"address": "subject"}], "valueJson": {"u32": 82}},
             {"id": "id2", "ledger": 99999, "ledgerClosedAt": "now", "contractId": selected.contract_id,
-             "topic": [{"symbol": "flaggedv2"}, {"address": {"accountId": "agent"}},
-                       {"address": {"accountId": "subject"}}, {"bytes": digest}], "value": {"u32": 91}},
+             "topicJson": [{"symbol": "flaggedv2"}, {"address": "agent"},
+                           {"address": "subject"}, {"bytes": digest}], "valueJson": {"u32": 91}},
         ], "cursor": "opaque"}
     monkeypatch.setattr(stellar, "_rpc", fake_rpc)
     result = stellar.list_flag_events(15, settings=settings)

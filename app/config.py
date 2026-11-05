@@ -52,6 +52,11 @@ class Settings(BaseSettings):
                 for item in self.trusted_proxy_cidrs.split(",") if item.strip()]
     event_store_path: str = "./data/events.sqlite3"
     event_ingest_interval_seconds: int = Field(default=30, gt=0, le=86_400)
+    agent_enabled: bool = False
+    agent_secret_key: str = ""
+    agent_poll_interval_seconds: int = Field(default=300, ge=30, le=86_400)
+    agent_scan_candidate_limit: int = Field(default=20, ge=1, le=200)
+    agent_flag_cooldown_seconds: int = Field(default=3600, ge=60, le=604_800)
 
     @model_validator(mode="after")
     def validate_risk_score_bands(self):

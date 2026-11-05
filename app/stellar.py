@@ -328,8 +328,13 @@ def _score_account_uncached(address: str, settings: Settings) -> dict:
     for op in recent:
         if op.get("type") not in {"payment", "create_account", "path_payment_strict_receive", "path_payment_strict_send"}:
             continue
-        source, destination = op.get("source_account"), op.get("to")
-        for account_id in (source, destination, op.get("from")):
+        # create_account operations carry the new account as `account` (and the
+        # funder as `funder`/`source_account`), not `to`/`from`, which are null here.
+        if op.get("type") == "create_account":
+            counterparty_fields = (op.get("source_account"), op.get("account"), op.get("funder"))
+        else:
+            counterparty_fields = (op.get("source_account"), op.get("to"), op.get("from"))
+        for account_id in counterparty_fields:
             if account_id and account_id != address:
                 counterparties.add(account_id)
         # Only native XLM amounts are included; asset amounts are never mixed into XLM totals.
@@ -554,11 +559,15 @@ def fetch_flag_event_page(limit: int, cursor: str | None = None,
     result = _rpc("getEvents", params, settings)
     output = []
     for event in result.get("events", []):
-        topics = [_native(topic) for topic in event.get("topic", event.get("topics", []))]
+        # With xdrFormat="json", Soroban RPC returns topicJson/valueJson, not
+        # topic/value; the topic/topics/value fallbacks cover older/other RPCs.
+        raw_topics = event.get("topicJson", event.get("topic", event.get("topics", [])))
+        topics = [_native(topic) for topic in raw_topics]
         is_v2 = bool(topics) and topics[0] == "flaggedv2"
+        raw_value = event.get("valueJson", event.get("value"))
         output.append({"id": event.get("id"), "ledger": event.get("ledger"),
                        "created_at": event.get("ledgerClosedAt"), "agent": topics[1] if len(topics) > 1 else None,
-                       "subject": topics[2] if len(topics) > 2 else None, "score": _native(event.get("value")),
+                       "subject": topics[2] if len(topics) > 2 else None, "score": _native(raw_value),
                        "report_digest": _bytes32_hex(topics[3]) if is_v2 and len(topics) > 3 else None,
                        "contract_id": event.get("contractId", settings.contract_id), "tx_hash": event.get("txHash")})
     return output, result.get("cursor")
@@ -572,9 +581,26 @@ def list_flag_events(limit: int, cursor: str | None = None, settings: Settings |
                        "contract_id": settings.contract_id}}
 
 
+_MAX_CATCHUP_PAGES = 25
+
+
 def sync_flag_events(store, settings: Settings | None = None) -> None:
+    """Advance ingestion, paging past empty RPC chunks until real events are found.
+
+    Soroban RPC's getEvents scans a bounded ledger range per call and returns
+    a continuation cursor even when that range has no matching events, so one
+    call is not enough to reach real data after a cold start or a wide
+    EVENTS_LOOKBACK_LEDGERS. This pages forward (persisting the cursor each
+    step so progress survives a later failure) until a page has events, the
+    walk catches up to the current ledger (no next cursor), or the cursor
+    stops advancing — bounded so one HTTP-triggered sync can't run away.
+    """
     settings = settings or get_settings()
     scope = f"{settings.network_passphrase}:{settings.contract_id}"
     cursor = store.ingestion_cursor(scope)
-    events, next_cursor = fetch_flag_event_page(limit=100, cursor=cursor, settings=settings)
-    store.save_page(events, next_cursor, scope)
+    for _ in range(_MAX_CATCHUP_PAGES):
+        events, next_cursor = fetch_flag_event_page(limit=100, cursor=cursor, settings=settings)
+        store.save_page(events, next_cursor, scope)
+        if events or next_cursor is None or next_cursor == cursor:
+            return
+        cursor = next_cursor

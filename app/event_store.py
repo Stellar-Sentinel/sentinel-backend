@@ -28,6 +28,7 @@ class EventStore:
                     score_json TEXT,
                     contract_id TEXT,
                     tx_hash TEXT,
+                    report_digest TEXT,
                     PRIMARY KEY (scope, event_id)
                 )"""
             )
@@ -40,6 +41,11 @@ class EventStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_flag_events_page ON flag_events(scope, ledger DESC, event_id DESC)"
             )
+            # Migration: a database created before flaggedv2 digests were
+            # persisted has flag_events without report_digest.
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(flag_events)")}
+            if "report_digest" not in columns:
+                connection.execute("ALTER TABLE flag_events ADD COLUMN report_digest TEXT")
 
     @contextmanager
     def _connect(self):
@@ -72,8 +78,8 @@ class EventStore:
                     raise ValueError("Soroban flag event has an invalid ledger") from None
                 connection.execute(
                     """INSERT OR IGNORE INTO flag_events
-                    (scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash, report_digest)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         scope,
                         str(event_id),
@@ -84,6 +90,7 @@ class EventStore:
                         json.dumps(event.get("score")),
                         event.get("contract_id"),
                         event.get("tx_hash"),
+                        event.get("report_digest"),
                     ),
                 )
             if next_cursor:
@@ -123,6 +130,7 @@ class EventStore:
                     "score": json.loads(row["score_json"]),
                     "contract_id": row["contract_id"],
                     "tx_hash": row["tx_hash"],
+                    "report_digest": row["report_digest"],
                 }
                 for row in selected
             ],

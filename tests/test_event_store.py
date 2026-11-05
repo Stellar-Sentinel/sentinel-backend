@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 SCOPE = "Test SDF Network ; September 2015:C" + "A" * 55
 
 
-def _event(event_id, ledger, score):
+def _event(event_id, ledger, score, report_digest=None):
     return {
         "id": event_id,
         "ledger": ledger,
@@ -22,6 +22,7 @@ def _event(event_id, ledger, score):
         "score": score,
         "contract_id": "C" + "A" * 55,
         "tx_hash": f"tx-{event_id}",
+        "report_digest": report_digest,
     }
 
 
@@ -43,6 +44,39 @@ def test_store_persists_cursor_and_deduplicates_events_after_restart(tmp_path):
     deduplicated = EventStore(path)
     assert deduplicated.ingestion_cursor(SCOPE) == "rpc-cursor-2"
     assert deduplicated.page(limit=10, scope=SCOPE)["events"][0]["score"] == 90
+
+
+def test_store_persists_flaggedv2_report_digest(tmp_path):
+    store = EventStore(str(tmp_path / "events.sqlite3"))
+    digest = "ab" * 32
+    store.save_page([_event("event-1", 10, 90, report_digest=digest)], "cursor-1", SCOPE)
+
+    assert store.page(limit=10, scope=SCOPE)["events"][0]["report_digest"] == digest
+
+
+def test_store_migrates_pre_digest_schema_without_data_loss(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "events.sqlite3")
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE flag_events (
+            scope TEXT NOT NULL, event_id TEXT NOT NULL, ledger INTEGER NOT NULL,
+            created_at TEXT, agent TEXT, subject TEXT, score_json TEXT,
+            contract_id TEXT, tx_hash TEXT, PRIMARY KEY (scope, event_id)
+        )"""
+    )
+    connection.execute(
+        "INSERT INTO flag_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (SCOPE, "pre-existing-event", 5, "ledger-5", "agent", "subject", "70", "C" + "A" * 55, "tx-pre"),
+    )
+    connection.commit()
+    connection.close()
+
+    store = EventStore(path)
+    result = store.page(limit=10, scope=SCOPE)["events"][0]
+    assert result["id"] == "pre-existing-event"
+    assert result["report_digest"] is None
 
 
 def test_store_separates_network_contract_scopes_and_rejects_bad_page_cursor(tmp_path):
@@ -79,9 +113,9 @@ def test_ingestion_resumes_from_persisted_rpc_cursor_and_keeps_cursor_on_rpc_err
                 "ledger": 12,
                 "ledgerClosedAt": "ledger-12",
                 "contractId": selected.contract_id,
-                "topic": [{"symbol": "flagged"}, {"address": {"accountId": "agent"}},
-                          {"address": {"accountId": "subject"}}],
-                "value": {"u32": 80},
+                "topicJson": [{"symbol": "flagged"}, {"address": "agent"},
+                              {"address": "subject"}],
+                "valueJson": {"u32": 80},
                 "txHash": "tx-2",
             }],
             "cursor": "resume-next",
@@ -103,6 +137,56 @@ def test_ingestion_resumes_from_persisted_rpc_cursor_and_keeps_cursor_on_rpc_err
         stellar.sync_flag_events(EventStore(str(tmp_path / "events.sqlite3")), settings)
     assert error.value.status_code == 502
     assert EventStore(str(tmp_path / "events.sqlite3")).ingestion_cursor(scope) == "resume-next"
+
+
+def test_sync_pages_past_empty_rpc_chunks_until_events_are_found(monkeypatch, tmp_path):
+    # Soroban RPC's getEvents can scan a bounded ledger range per call and
+    # return a continuation cursor with zero matches; sync must keep paging
+    # forward (not stop at the first empty response) to reach real events.
+    store = EventStore(str(tmp_path / "events.sqlite3"))
+    settings = Settings(contract_id="C" + "A" * 55)
+    scope = f"{settings.network_passphrase}:{settings.contract_id}"
+    calls = []
+
+    def rpc(method, params, selected):
+        calls.append(params.get("pagination", {}).get("cursor"))
+        if len(calls) < 3:
+            return {"events": [], "cursor": f"empty-chunk-{len(calls)}"}
+        return {
+            "events": [{
+                "id": "event-1", "ledger": 10, "ledgerClosedAt": "ledger-10",
+                "contractId": selected.contract_id,
+                "topicJson": [{"symbol": "flagged"}, {"address": "agent"}, {"address": "subject"}],
+                "valueJson": {"u32": 80}, "txHash": "tx-1",
+            }],
+            "cursor": "caught-up",
+        }
+
+    monkeypatch.setattr(stellar, "_rpc", rpc)
+    stellar.sync_flag_events(store, settings)
+
+    assert len(calls) == 3
+    assert store.ingestion_cursor(scope) == "caught-up"
+    assert store.page(limit=10, scope=scope)["events"][0]["id"] == "event-1"
+
+
+def test_sync_stops_after_max_catchup_pages_without_crashing(monkeypatch, tmp_path):
+    store = EventStore(str(tmp_path / "events.sqlite3"))
+    settings = Settings(contract_id="C" + "A" * 55)
+    scope = f"{settings.network_passphrase}:{settings.contract_id}"
+    calls = []
+
+    def always_empty_rpc(method, params, selected):
+        if method != "getEvents":
+            return {"latestLedger": 100000, "oldestLedger": 1}
+        calls.append(1)
+        return {"events": [], "cursor": f"still-empty-{len(calls)}"}
+
+    monkeypatch.setattr(stellar, "_rpc", always_empty_rpc)
+    stellar.sync_flag_events(store, settings)
+
+    assert len(calls) == stellar._MAX_CATCHUP_PAGES
+    assert store.ingestion_cursor(scope) == f"still-empty-{stellar._MAX_CATCHUP_PAGES}"
 
 
 def test_events_endpoint_pages_persisted_records_with_compatible_shape(monkeypatch, tmp_path):
