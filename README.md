@@ -1,5 +1,7 @@
 # Stellar Sentinel Backend
 
+[Live API](https://sentinel-backend-skgu.onrender.com) · [Interactive docs](https://sentinel-backend-skgu.onrender.com/docs) — deployed on Render, backing the [live dashboard](https://github.com/Stellar-Sentinel/sentinel-frontend). Hosted on a free instance, so the first request after idle may take 30-50s to wake it.
+
 The screening endpoint accepts checksum-validated classic (`G...`) and muxed (`M...`) Stellar account IDs and forwards them unchanged to Horizon.
 
 [![CI](https://github.com/Stellar-Sentinel/sentinel-backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Stellar-Sentinel/sentinel-backend/actions/workflows/ci.yml)
