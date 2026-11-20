@@ -25,6 +25,27 @@ _CONFIRMATION_TIMEOUT_SECONDS = 30
 _CONFIRMATION_POLL_SECONDS = 3
 
 
+def _account_label(address: str) -> str:
+    """Keep public-account diagnostics bounded without logging full addresses."""
+    return address[-8:] if isinstance(address, str) else "unknown"
+
+
+def _log_transaction_event(event: str, address: str, *, score: int | None = None, tx_present: bool = False) -> None:
+    logger.info(
+        "agent_transaction event=%s account_suffix=%s score=%s tx_present=%s",
+        event,
+        _account_label(address),
+        score,
+        tx_present,
+        extra={
+            "event": event,
+            "account_suffix": _account_label(address),
+            "score": score,
+            "tx_present": tx_present,
+        },
+    )
+
+
 def report_digest(result: dict) -> bytes:
     """SHA-256 of the canonical off-chain report a `flaggedv2` event attests to.
 
@@ -125,20 +146,24 @@ class MonitoringAgent:
         try:
             tx = self.server.prepare_transaction(tx)
         except PrepareTransactionException as exc:
-            raise RuntimeError(f"flag_anomaly_v2 simulation failed: {exc.simulate_transaction_response}") from exc
+            _log_transaction_event("simulation_failed", address, score=int(result["score"]))
+            raise RuntimeError("flag_anomaly_v2 simulation failed") from exc
 
         tx.sign(self.keypair)
         sent = self.server.send_transaction(tx)
         if sent.status != SendTransactionStatus.PENDING:
-            raise RuntimeError(f"flag_anomaly_v2 submission rejected: {sent.error_result_xdr}")
+            _log_transaction_event("submission_rejected", address, score=int(result["score"]))
+            raise RuntimeError("flag_anomaly_v2 submission rejected")
 
         deadline = time.monotonic() + _CONFIRMATION_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             outcome = self.server.get_transaction(sent.hash)
             if outcome.status != GetTransactionStatus.NOT_FOUND:
                 if outcome.status != GetTransactionStatus.SUCCESS:
-                    raise RuntimeError(f"flag_anomaly_v2 transaction failed: {outcome.result_xdr}")
-                logger.info("Filed flag_anomaly_v2 (score=%s, tx=%s)", result["score"], sent.hash)
+                    _log_transaction_event("confirmation_failed", address, score=int(result["score"]), tx_present=True)
+                    raise RuntimeError("flag_anomaly_v2 transaction failed")
+                _log_transaction_event("confirmed", address, score=int(result["score"]), tx_present=True)
                 return
             time.sleep(_CONFIRMATION_POLL_SECONDS)
+        _log_transaction_event("confirmation_timed_out", address, score=int(result["score"]), tx_present=True)
         raise RuntimeError("flag_anomaly_v2 confirmation timed out")
