@@ -87,3 +87,18 @@ def test_forwarded_for_is_ignored_unless_direct_peer_is_trusted():
 
     assert middleware._client_ip(untrusted_scope) == "198.51.100.9"
     assert middleware._client_ip(trusted_scope) == "203.0.113.8"
+
+
+def test_malformed_forwarded_chain_falls_back_to_trusted_peer():
+    middleware = ScreeningRateLimitMiddleware(
+        app=None,
+        requests=5,
+        window_seconds=60,
+        trusted_proxies=[ip_network("10.0.0.0/8")],
+    )
+    scope = {
+        "client": ("10.0.0.2", 1234),
+        "headers": [(b"x-forwarded-for", b"203.0.113.8, not-an-ip")],
+    }
+
+    assert middleware._client_ip(scope) == "10.0.0.2"
