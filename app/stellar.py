@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 import time
 import math
 import threading
+import logging
 
 import httpx
 from fastapi import HTTPException
@@ -17,6 +18,7 @@ from app.config import Settings, get_settings
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 HORIZON_OPERATION_PAGE_SIZE = 200
+cache_logger = logging.getLogger("sentinel.cache")
 _screening_cache = OrderedDict()
 _screening_cache_lock = threading.Lock()
 
@@ -298,7 +300,17 @@ def score_account(address: str, settings: Settings | None = None) -> dict:
     )
     cached = _cached_screening(key, settings.screening_cache_ttl_seconds)
     if cached is not None:
+        cache_logger.debug(
+            "screening_cache event=hit ttl_seconds=%d",
+            settings.screening_cache_ttl_seconds,
+            extra={"event": "hit", "ttl_seconds": settings.screening_cache_ttl_seconds},
+        )
         return cached
+    cache_logger.debug(
+        "screening_cache event=miss ttl_seconds=%d",
+        settings.screening_cache_ttl_seconds,
+        extra={"event": "miss", "ttl_seconds": settings.screening_cache_ttl_seconds},
+    )
     result = _score_account_uncached(address, settings)
     _store_screening(key, result, settings)
     return copy.deepcopy(result)
