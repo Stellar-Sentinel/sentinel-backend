@@ -37,7 +37,8 @@ async def _run_agent_forever():
     if not (settings.agent_enabled and settings.agent_secret_key and settings.contract_id):
         return
     try:
-        agent = MonitoringAgent(settings)
+        store = get_event_store(settings.event_store_path) if settings.agent_cooldown_persistence else None
+        agent = MonitoringAgent(settings, store=store)
     except ValueError as exc:
         logger.warning("Monitoring agent disabled: %s", exc)
         return
