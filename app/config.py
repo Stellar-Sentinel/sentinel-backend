@@ -1,5 +1,6 @@
 from functools import lru_cache
 from ipaddress import ip_network
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,11 +59,63 @@ class Settings(BaseSettings):
     agent_scan_candidate_limit: int = Field(default=20, ge=1, le=200)
     agent_flag_cooldown_seconds: int = Field(default=3600, ge=60, le=604_800)
 
+    @field_validator("horizon_url", "soroban_rpc_url")
+    @classmethod
+    def validate_upstream_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("upstream URLs must include an http(s) scheme and host")
+        if parsed.username or parsed.password:
+            raise ValueError("upstream URLs must not contain credentials")
+        return value.rstrip("/")
+
+    @field_validator("network_passphrase", "environment")
+    @classmethod
+    def validate_required_labels(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("deployment labels must not be blank")
+        return value
+
     @model_validator(mode="after")
     def validate_risk_score_bands(self):
         if self.risk_high_score_threshold <= self.risk_elevated_score_threshold:
             raise ValueError("RISK_HIGH_SCORE_THRESHOLD must exceed RISK_ELEVATED_SCORE_THRESHOLD")
         return self
+
+    @model_validator(mode="after")
+    def validate_deployment_security(self):
+        if self.environment.lower() == "production":
+            if len(self.api_key.strip()) < 32:
+                raise ValueError("production deployments require an API key of at least 32 characters")
+            if not self.contract_id.strip():
+                raise ValueError("production deployments require CONTRACT_ID")
+            origins = [origin.strip().lower() for origin in self.cors_origins.split(",") if origin.strip()]
+            if not origins:
+                raise ValueError("production deployments require at least one CORS origin")
+            if "*" in origins:
+                raise ValueError("production CORS origins must not use a wildcard")
+            if any("localhost" in origin or "127.0.0.1" in origin for origin in origins):
+                raise ValueError("production CORS origins must not include local development hosts")
+        if self.agent_enabled and (not self.agent_secret_key.strip() or not self.contract_id.strip()):
+            raise ValueError("AGENT_ENABLED requires AGENT_SECRET_KEY and CONTRACT_ID")
+        return self
+
+    def deployment_diagnostics(self) -> dict[str, object]:
+        """Return bounded, secret-free startup diagnostics for operators."""
+        return {
+            "environment": self.environment.lower(),
+            "network_passphrase": self.network_passphrase,
+            "horizon_host": urlparse(self.horizon_url).hostname,
+            "soroban_rpc_host": urlparse(self.soroban_rpc_url).hostname,
+            "contract_configured": bool(self.contract_id),
+            "api_key_configured": bool(self.api_key),
+            "agent_enabled": self.agent_enabled,
+            "agent_secret_configured": bool(self.agent_secret_key),
+            "cors_origin_count": len([item for item in self.cors_origins.split(",") if item.strip()]),
+            "request_timeout_seconds": self.request_timeout_seconds,
+            "upstream_max_retries": self.upstream_max_retries,
+        }
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

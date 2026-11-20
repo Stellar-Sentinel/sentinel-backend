@@ -124,6 +124,8 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `AGENT_SCAN_CANDIDATE_LIMIT` | `20` | Recent network-wide operations scanned per cycle to find candidate accounts. |
 | `AGENT_FLAG_COOLDOWN_SECONDS` | `3600` | Minimum time before the agent re-flags the same address; resets on restart. |
 
+At startup the service validates that upstream URLs are HTTP(S) URLs without embedded credentials. Production deployments must provide an API key, a contract ID, and explicit non-local, non-wildcard CORS origins. Enabling the monitoring agent also requires both `AGENT_SECRET_KEY` and `CONTRACT_ID`; otherwise configuration loading fails before the process starts. A bounded startup diagnostic record reports environment, upstream hosts, configured-feature flags, and numeric limits without logging secret values.
+
 Only `POST /risk/score` is rate-limited; health, events, and network status remain available. A client that exceeds its quota receives HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. The limiter uses an in-memory sliding window per application process, so deployments with multiple workers or replicas should enforce a shared limit at their gateway. Forwarded client addresses are used only when the direct peer matches `TRUSTED_PROXY_CIDRS`; configure the exact proxy ranges and ensure the proxy overwrites or appends `X-Forwarded-For` correctly. With no trusted ranges configured, the middleware uses the direct peer address and ignores forwarded headers.
 
 Do not commit `.env`, account secrets, signing keys, or tokens. `API_KEY` is optional for local development and should be configured for private deployments.
