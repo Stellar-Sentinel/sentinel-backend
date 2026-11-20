@@ -26,7 +26,7 @@ def _event(event_id, ledger, score, report_digest=None):
     }
 
 
-def test_store_persists_cursor_and_deduplicates_events_after_restart(tmp_path):
+def test_store_persists_cursor_and_deduplicates_events_after_restart(tmp_path, caplog):
     path = str(tmp_path / "events.sqlite3")
     store = EventStore(path)
     store.save_page([_event("event-1", 10, 70), _event("event-2", 11, 90)], "rpc-cursor-1", SCOPE)
@@ -44,6 +44,7 @@ def test_store_persists_cursor_and_deduplicates_events_after_restart(tmp_path):
     deduplicated = EventStore(path)
     assert deduplicated.ingestion_cursor(SCOPE) == "rpc-cursor-2"
     assert deduplicated.page(limit=10, scope=SCOPE)["events"][0]["score"] == 90
+    assert "duplicates=1" in caplog.text
 
 
 def test_store_persists_flaggedv2_report_digest(tmp_path):
