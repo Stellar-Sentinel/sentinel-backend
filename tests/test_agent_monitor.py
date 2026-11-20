@@ -1,3 +1,5 @@
+import pytest
+
 from app.agents import monitor
 from app.config import Settings
 
@@ -54,6 +56,11 @@ def test_monitoring_agent_requires_secret_and_contract_id():
         assert False, "expected ValueError for missing secret key"
     except ValueError:
         pass
+
+
+def test_monitoring_agent_rejects_malformed_secret_before_startup():
+    with pytest.raises(Exception, match="(?i)(secret|key)"):
+        monitor.MonitoringAgent(Settings(agent_secret_key="not-a-stellar-secret", contract_id=CONTRACT_ID))
 
     try:
         monitor.MonitoringAgent(Settings(agent_secret_key=AGENT_SECRET, contract_id=""))
