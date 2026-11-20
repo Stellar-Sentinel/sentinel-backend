@@ -82,6 +82,10 @@ def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
 
 
+def test_address_validation_rejects_oversized_input_before_decoding():
+    assert not is_valid_account_id("G" + "A" * 10_000)
+
+
 def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
     address = "G" + "Z" * 55
     with caplog.at_level("INFO", logger="sentinel.request"):
