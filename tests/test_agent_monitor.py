@@ -35,6 +35,30 @@ def test_report_digest_is_32_bytes_and_field_scoped():
     assert monitor.report_digest(with_extra_field) == digest
 
 
+def test_report_digest_normalizes_values_and_versions_schema():
+    result = _result(CANDIDATE_A, threshold_exceeded=True)
+    result.update(
+        score="85",
+        threshold="70",
+        risk_level="high",
+        scoring_policy_version=1,
+        as_of=None,
+    )
+
+    canonical = monitor.canonical_report(result)
+
+    assert canonical == {
+        "address": CANDIDATE_A,
+        "score": 85,
+        "threshold": 70,
+        "risk_level": "high",
+        "scoring_policy_version": "1",
+        "as_of": None,
+        "report_schema_version": 1,
+    }
+    assert monitor.report_digest(result) == monitor.report_digest(dict(result))
+
+
 def test_recent_network_accounts_dedupes_preserves_order_and_skips_malformed(monkeypatch):
     records = [
         {"source_account": CANDIDATE_A},
