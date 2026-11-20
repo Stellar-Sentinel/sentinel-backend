@@ -41,6 +41,11 @@ async def _run_agent_forever():
     except ValueError as exc:
         logger.warning("Monitoring agent disabled: %s", exc)
         return
+    logger.info(
+        "Monitoring agent authorization configured (contract_id=%s network=%s)",
+        settings.contract_id,
+        settings.network_passphrase,
+    )
     while True:
         try:
             filed = await asyncio.to_thread(agent.run_once)
