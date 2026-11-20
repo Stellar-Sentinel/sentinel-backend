@@ -32,6 +32,8 @@ class RequestLoggingMiddleware:
             route = scope.get("route")
             route_template = getattr(route, "path", None) or "<unmatched>"
             record = {
+                "event": "http.request",
+                "schema_version": 1,
                 "method": scope.get("method", ""),
                 "route": route_template,
                 "status": status_code,
