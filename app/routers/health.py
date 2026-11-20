@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -5,6 +7,7 @@ from app import stellar
 from app.config import get_settings
 
 router = APIRouter()
+logger = logging.getLogger("sentinel.readiness")
 
 
 @router.get("/health")
@@ -37,5 +40,16 @@ def readiness_check():
         dependencies["soroban_rpc"] = "unavailable"
 
     ready = all(status == "ok" for status in dependencies.values())
+    logger.info(
+        "readiness_probe status=%s horizon=%s soroban_rpc=%s",
+        "ready" if ready else "not_ready",
+        dependencies["horizon"],
+        dependencies["soroban_rpc"],
+        extra={
+            "status": "ready" if ready else "not_ready",
+            "horizon": dependencies["horizon"],
+            "soroban_rpc": dependencies["soroban_rpc"],
+        },
+    )
     payload = {"status": "ready" if ready else "not_ready", "dependencies": dependencies}
     return payload if ready else JSONResponse(status_code=503, content=payload)
