@@ -50,6 +50,7 @@ class ScreeningRateLimitMiddleware:
                 (b"retry-after", str(retry_after).encode("ascii")),
                 (b"x-ratelimit-limit", str(self.requests).encode("ascii")),
                 (b"x-ratelimit-remaining", b"0"),
+                (b"cache-control", b"no-store"),
             ]
             await send({"type": "http.response.start", "status": 429, "headers": headers})
             await send({"type": "http.response.body", "body": body})
