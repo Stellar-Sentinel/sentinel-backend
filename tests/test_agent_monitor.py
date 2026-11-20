@@ -72,6 +72,12 @@ def test_recent_network_accounts_dedupes_preserves_order_and_skips_malformed(mon
     assert accounts == [CANDIDATE_A, CANDIDATE_B]
 
 
+def test_select_candidate_accounts_excludes_agent_and_keeps_bound():
+    accounts = [AGENT_ADDRESS, CANDIDATE_A, CANDIDATE_A, CANDIDATE_B, "", None]
+
+    assert monitor.select_candidate_accounts(accounts, {AGENT_ADDRESS}, 1) == [CANDIDATE_A]
+
+
 def test_monitoring_agent_requires_secret_and_contract_id():
     try:
         monitor.MonitoringAgent(Settings(agent_secret_key="", contract_id=CONTRACT_ID))

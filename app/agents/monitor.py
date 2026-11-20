@@ -91,6 +91,22 @@ def recent_network_accounts(settings: Settings, limit: int) -> list[str]:
     return seen
 
 
+def select_candidate_accounts(accounts: list[str], excluded: set[str], limit: int) -> list[str]:
+    """Select a bounded, ordered candidate set after applying exclusions."""
+    if limit <= 0:
+        return []
+    selected: list[str] = []
+    seen: set[str] = set()
+    for account in accounts:
+        if not isinstance(account, str) or not account or account in excluded or account in seen:
+            continue
+        seen.add(account)
+        selected.append(account)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 class MonitoringAgent:
     """Holds the agent's signing key and files flags for over-threshold accounts."""
 
@@ -113,10 +129,14 @@ class MonitoringAgent:
 
         Returns the number of flags successfully filed in this cycle.
         """
-        candidates = recent_network_accounts(self.settings, self.settings.agent_scan_candidate_limit)
+        candidates = select_candidate_accounts(
+            recent_network_accounts(self.settings, self.settings.agent_scan_candidate_limit),
+            {self.keypair.public_key},
+            self.settings.agent_scan_candidate_limit,
+        )
         filed = 0
         for address in candidates:
-            if address == self.keypair.public_key or self._on_cooldown(address):
+            if self._on_cooldown(address):
                 continue
             try:
                 result = score_account(address, self.settings)
