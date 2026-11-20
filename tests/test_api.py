@@ -97,6 +97,37 @@ def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
     assert "token" not in caplog.text
 
 
+def test_request_log_has_stable_structured_contract(caplog):
+    with caplog.at_level("INFO", logger="sentinel.request"):
+        response = client.get("/health", headers={"X-Request-ID": "req-structured"})
+
+    assert response.status_code == 200
+    record = json.loads(caplog.records[-1].message)
+    assert record["schema_version"] == "1"
+    assert record["event"] == "http.request.completed"
+    assert record["severity"] == "INFO"
+    assert record["request_id"] == "req-structured"
+    assert record["route"] == "/health"
+    assert record["status_class"] == "2xx"
+    assert record["outcome"] == "success"
+    assert record["latency_ms"] >= 0
+    assert record["occurred_at"].endswith("Z")
+
+
+def test_request_log_marks_failures_without_raw_path(caplog):
+    secret_path = "/missing/private-token"
+    with caplog.at_level("INFO", logger="sentinel.request"):
+        response = client.get(secret_path)
+
+    assert response.status_code == 404
+    record = json.loads(caplog.records[-1].message)
+    assert record["severity"] == "WARNING"
+    assert record["status_class"] == "4xx"
+    assert record["outcome"] == "failure"
+    assert record["route"] == "<unmatched>"
+    assert secret_path not in caplog.text
+
+
 def test_readiness_reports_each_dependency(monkeypatch):
     monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {})
     monkeypatch.setattr(stellar, "_rpc", lambda *args, **kwargs: {"status": "healthy"})
