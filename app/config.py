@@ -64,6 +64,16 @@ class Settings(BaseSettings):
             raise ValueError("RISK_HIGH_SCORE_THRESHOLD must exceed RISK_ELEVATED_SCORE_THRESHOLD")
         return self
 
+    @model_validator(mode="after")
+    def validate_production_security(self):
+        if self.environment.lower() == "production":
+            if len(self.api_key) < 32:
+                raise ValueError("production deployments require an API key of at least 32 characters")
+            origins = [origin.strip().lower() for origin in self.cors_origins.split(",") if origin.strip()]
+            if any("localhost" in origin or "127.0.0.1" in origin for origin in origins):
+                raise ValueError("production CORS origins must not include local development hosts")
+        return self
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

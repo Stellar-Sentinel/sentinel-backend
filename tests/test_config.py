@@ -34,3 +34,17 @@ def test_accepts_runtime_limit_boundaries():
     assert settings.operation_scan_limit == 1_000
     assert settings.activity_window_days == 365
     assert settings.events_lookback_ledgers == 1_000_000
+
+
+def test_production_requires_api_key_and_nonlocal_cors():
+    with pytest.raises(ValidationError, match="API key"):
+        Settings(environment="production", cors_origins="https://app.example")
+
+    with pytest.raises(ValidationError, match="CORS"):
+        Settings(environment="production", api_key="x" * 32, cors_origins="http://localhost:3000")
+
+    assert Settings(
+        environment="production",
+        api_key="x" * 32,
+        cors_origins="https://app.example",
+    ).environment == "production"
