@@ -23,6 +23,22 @@ logger = logging.getLogger("sentinel.agent")
 
 _CONFIRMATION_TIMEOUT_SECONDS = 30
 _CONFIRMATION_POLL_SECONDS = 3
+_CANONICAL_REPORT_FIELDS = (
+    "address",
+    "score",
+    "risk_level",
+    "threshold",
+    "scoring_policy_version",
+    "as_of",
+)
+
+
+def canonical_report_payload(result: dict) -> dict:
+    """Return the validated field set bound by a flaggedv2 digest."""
+    missing = [field for field in _CANONICAL_REPORT_FIELDS if field not in result]
+    if missing:
+        raise ValueError(f"report is missing canonical fields: {', '.join(missing)}")
+    return {field: result[field] for field in _CANONICAL_REPORT_FIELDS}
 
 
 def report_digest(result: dict) -> bytes:
@@ -33,14 +49,7 @@ def report_digest(result: dict) -> bytes:
     must hash the same fields the same way.
     """
     canonical = json.dumps(
-        {
-            "address": result["address"],
-            "score": result["score"],
-            "risk_level": result["risk_level"],
-            "threshold": result["threshold"],
-            "scoring_policy_version": result["scoring_policy_version"],
-            "as_of": result["as_of"],
-        },
+        canonical_report_payload(result),
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
