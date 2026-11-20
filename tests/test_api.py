@@ -59,6 +59,16 @@ def test_request_id_is_propagated_or_generated():
     assert len(rejected.headers["x-request-id"]) == 32
 
 
+def test_security_headers_and_request_id_survive_unmatched_routes():
+    response = client.get("/does-not-exist", headers={"X-Request-ID": "trace-42"})
+
+    assert response.status_code == 404
+    assert response.headers["x-request-id"] == "trace-42"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     assert is_valid_account_id(ADDRESS)
     assert is_valid_account_id(MUXED_ADDRESS)
