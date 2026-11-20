@@ -33,6 +33,17 @@ def test_report_digest_is_32_bytes_and_field_scoped():
     assert monitor.report_digest(with_extra_field) == digest
 
 
+def test_report_digest_rejects_incomplete_canonical_report():
+    incomplete = _result(CANDIDATE_A, threshold_exceeded=True)
+    del incomplete["as_of"]
+
+    try:
+        monitor.report_digest(incomplete)
+        assert False, "expected incomplete report rejection"
+    except ValueError as error:
+        assert "as_of" in str(error)
+
+
 def test_recent_network_accounts_dedupes_preserves_order_and_skips_malformed(monkeypatch):
     records = [
         {"source_account": CANDIDATE_A},
