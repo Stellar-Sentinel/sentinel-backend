@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from stellar_sdk import Keypair, SorobanServer, TransactionBuilder, scval
 from stellar_sdk.exceptions import PrepareTransactionException
@@ -18,6 +19,9 @@ from stellar_sdk.soroban_rpc import GetTransactionStatus, SendTransactionStatus
 
 from app.config import Settings
 from app.stellar import _get, score_account
+
+if TYPE_CHECKING:
+    from app.event_store import EventStore
 
 logger = logging.getLogger("sentinel.agent")
 
@@ -65,7 +69,7 @@ def recent_network_accounts(settings: Settings, limit: int) -> list[str]:
 class MonitoringAgent:
     """Holds the agent's signing key and files flags for over-threshold accounts."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, store: "EventStore | None" = None):
         if not settings.agent_secret_key:
             raise ValueError("AGENT_SECRET_KEY is required to run the monitoring agent")
         if not settings.contract_id:
@@ -73,11 +77,39 @@ class MonitoringAgent:
         self.settings = settings
         self.keypair = Keypair.from_secret(settings.agent_secret_key)
         self.server = SorobanServer(settings.soroban_rpc_url)
+        self.store = store if settings.agent_cooldown_persistence else None
+        self._cooldown_scope = f"{settings.network_passphrase}:{settings.contract_id}"
         self._last_flagged_at: dict[str, float] = {}
+        self.skip_counts = {
+            "self": 0,
+            "duplicate": 0,
+            "cooldown": 0,
+            "below_threshold": 0,
+            "scoring_failure": 0,
+            "submission_failure": 0,
+        }
+
+    def _record_cooldown(self, address: str, now: float | None = None) -> None:
+        timestamp = time.monotonic() if now is None else now
+        self._last_flagged_at[address] = timestamp
+        if self.store:
+            self.store.save_agent_cooldown(self._cooldown_scope, address, time.time())
 
     def _on_cooldown(self, address: str) -> bool:
         last = self._last_flagged_at.get(address)
-        return last is not None and (time.monotonic() - last) < self.settings.agent_flag_cooldown_seconds
+        if last is not None and (time.monotonic() - last) < self.settings.agent_flag_cooldown_seconds:
+            return True
+        if self.store:
+            persisted = self.store.agent_cooldown(self._cooldown_scope, address)
+            if persisted is not None and (time.time() - persisted) < self.settings.agent_flag_cooldown_seconds:
+                return True
+        return False
+
+    def clear_cooldown(self, address: str) -> None:
+        """Operator control to allow an address to be evaluated immediately."""
+        self._last_flagged_at.pop(address, None)
+        if self.store:
+            self.store.clear_agent_cooldown(self._cooldown_scope, address)
 
     def run_once(self) -> int:
         """Score one batch of recently active accounts and file any due flags.
@@ -86,21 +118,33 @@ class MonitoringAgent:
         """
         candidates = recent_network_accounts(self.settings, self.settings.agent_scan_candidate_limit)
         filed = 0
+        seen: set[str] = set()
         for address in candidates:
-            if address == self.keypair.public_key or self._on_cooldown(address):
+            if address in seen:
+                self.skip_counts["duplicate"] += 1
+                continue
+            seen.add(address)
+            if address == self.keypair.public_key:
+                self.skip_counts["self"] += 1
+                continue
+            if self._on_cooldown(address):
+                self.skip_counts["cooldown"] += 1
                 continue
             try:
                 result = score_account(address, self.settings)
             except Exception as exc:
+                self.skip_counts["scoring_failure"] += 1
                 logger.warning("Agent scoring failed for a candidate (%s)", type(exc).__name__)
                 continue
             if not result.get("threshold_exceeded"):
+                self.skip_counts["below_threshold"] += 1
                 continue
-            self._last_flagged_at[address] = time.monotonic()
+            self._record_cooldown(address)
             try:
                 self._file_flag(address, result)
                 filed += 1
             except Exception as exc:
+                self.skip_counts["submission_failure"] += 1
                 logger.warning("Agent flag submission failed (%s)", type(exc).__name__)
         return filed
 
