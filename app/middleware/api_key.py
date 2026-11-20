@@ -40,6 +40,7 @@ class ApiKeyMiddleware:
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
                 (b"www-authenticate", b"Bearer"),
+                (b"cache-control", b"no-store"),
             ],
         })
         await send({"type": "http.response.body", "body": body})
