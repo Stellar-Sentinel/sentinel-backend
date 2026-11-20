@@ -1,0 +1,23 @@
+[
+  {
+    "name": "empty-account-low",
+    "sequence": "100",
+    "operations": [],
+    "settings": {},
+    "expected": {"score": 0, "risk_level": "low", "threshold_exceeded": false}
+  },
+  {
+    "name": "counterparty-and-sequence-boundary",
+    "sequence": "5",
+    "operations": {"payment_counterparties": 20, "amount": "1"},
+    "settings": {},
+    "expected": {"score": 40, "risk_level": "elevated", "threshold_exceeded": false}
+  },
+  {
+    "name": "activity-and-volume-high",
+    "sequence": "100",
+    "operations": {"payments": 50, "amount": "10000"},
+    "settings": {"risk_high_score_threshold": 40, "risk_elevated_score_threshold": 20},
+    "expected": {"score": 50, "risk_level": "high", "threshold_exceeded": true}
+  }
+]
