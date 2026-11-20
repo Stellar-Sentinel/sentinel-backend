@@ -97,6 +97,17 @@ def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
     assert "token" not in caplog.text
 
 
+def test_request_log_contains_safe_operational_fields(caplog):
+    with caplog.at_level("INFO", logger="sentinel.request"):
+        response = client.get("/health", headers={"X-Request-ID": "trace_123-abc"})
+
+    log_record = json.loads(caplog.records[-1].message)
+    assert response.status_code == 200
+    assert log_record["route"] == "/health"
+    assert log_record["request_id"] == "trace_123-abc"
+    assert isinstance(log_record["latency_ms"], (int, float))
+
+
 def test_readiness_reports_each_dependency(monkeypatch):
     monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {})
     monkeypatch.setattr(stellar, "_rpc", lambda *args, **kwargs: {"status": "healthy"})
