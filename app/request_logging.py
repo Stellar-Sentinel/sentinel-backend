@@ -3,6 +3,7 @@ import json
 import logging
 import time
 
+from app.metrics import service_metrics
 
 logger = logging.getLogger("sentinel.request")
 
@@ -37,4 +38,5 @@ class RequestLoggingMiddleware:
                 "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 "request_id": scope.get("sentinel.request_id"),
             }
+            service_metrics.record_request(route_template, status_code, record["latency_ms"])
             logger.info(json.dumps(record, separators=(",", ":")))
