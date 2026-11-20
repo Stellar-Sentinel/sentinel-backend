@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.config import get_settings
+from app.config import configuration_diagnostics, get_settings
 from app.middleware.api_key import ApiKeyMiddleware
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -19,6 +19,7 @@ from app.agents.monitor import MonitoringAgent
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+logger.info("Deployment configuration validated: %s", configuration_diagnostics(settings))
 
 
 async def _ingest_events_forever():
