@@ -74,6 +74,40 @@ class MonitoringAgent:
         self.keypair = Keypair.from_secret(settings.agent_secret_key)
         self.server = SorobanServer(settings.soroban_rpc_url)
         self._last_flagged_at: dict[str, float] = {}
+        self._last_cycle_metrics: dict[str, object] = self._empty_cycle_metrics()
+
+    @staticmethod
+    def _empty_cycle_metrics() -> dict[str, object]:
+        """Return bounded, privacy-safe counters for one poll cycle."""
+        return {
+            "candidates_seen": 0,
+            "candidates_scored": 0,
+            "flags_submitted": 0,
+            "skipped": {
+                "self": 0,
+                "cooldown": 0,
+                "below_threshold": 0,
+            },
+            "failures": {
+                "scoring": 0,
+                "submission": 0,
+            },
+        }
+
+    def metrics_snapshot(self) -> dict[str, object]:
+        """Return the most recent cycle's bounded diagnostics.
+
+        The snapshot intentionally contains counts and fixed reason labels only;
+        it never exposes account addresses, payloads, or exception text.
+        """
+        metrics = self._last_cycle_metrics
+        return {
+            "candidates_seen": metrics["candidates_seen"],
+            "candidates_scored": metrics["candidates_scored"],
+            "flags_submitted": metrics["flags_submitted"],
+            "skipped": dict(metrics["skipped"]),
+            "failures": dict(metrics["failures"]),
+        }
 
     def _on_cooldown(self, address: str) -> bool:
         last = self._last_flagged_at.get(address)
@@ -84,23 +118,35 @@ class MonitoringAgent:
 
         Returns the number of flags successfully filed in this cycle.
         """
+        metrics = self._empty_cycle_metrics()
+        self._last_cycle_metrics = metrics
         candidates = recent_network_accounts(self.settings, self.settings.agent_scan_candidate_limit)
+        metrics["candidates_seen"] = len(candidates)
         filed = 0
         for address in candidates:
-            if address == self.keypair.public_key or self._on_cooldown(address):
+            if address == self.keypair.public_key:
+                metrics["skipped"]["self"] += 1
+                continue
+            if self._on_cooldown(address):
+                metrics["skipped"]["cooldown"] += 1
                 continue
             try:
                 result = score_account(address, self.settings)
             except Exception as exc:
+                metrics["failures"]["scoring"] += 1
                 logger.warning("Agent scoring failed for a candidate (%s)", type(exc).__name__)
                 continue
+            metrics["candidates_scored"] += 1
             if not result.get("threshold_exceeded"):
+                metrics["skipped"]["below_threshold"] += 1
                 continue
-            self._last_flagged_at[address] = time.monotonic()
             try:
                 self._file_flag(address, result)
+                self._last_flagged_at[address] = time.monotonic()
                 filed += 1
+                metrics["flags_submitted"] += 1
             except Exception as exc:
+                metrics["failures"]["submission"] += 1
                 logger.warning("Agent flag submission failed (%s)", type(exc).__name__)
         return filed
 
