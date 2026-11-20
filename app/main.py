@@ -19,6 +19,7 @@ from app.agents.monitor import MonitoringAgent
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+logger.info("Deployment configuration loaded: %s", settings.deployment_diagnostics())
 
 
 async def _ingest_events_forever():
