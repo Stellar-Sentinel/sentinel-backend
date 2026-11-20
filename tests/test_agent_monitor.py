@@ -110,3 +110,34 @@ def test_run_once_continues_past_a_scoring_failure(monkeypatch):
 
     assert filed == 1
     assert filed_for == [CANDIDATE_B]
+
+
+def test_metrics_snapshot_uses_fixed_labels_and_counts_skips(monkeypatch):
+    settings = Settings(agent_secret_key=AGENT_SECRET, contract_id=CONTRACT_ID)
+    agent = monitor.MonitoringAgent(settings)
+
+    monkeypatch.setattr(
+        monitor,
+        "recent_network_accounts",
+        lambda *args, **kwargs: [AGENT_ADDRESS, CANDIDATE_A, CANDIDATE_B],
+    )
+    monkeypatch.setattr(
+        monitor,
+        "score_account",
+        lambda address, _settings: _result(
+            address,
+            threshold_exceeded=(address == CANDIDATE_A),
+        ),
+    )
+    monkeypatch.setattr(agent, "_file_flag", lambda *_args: None)
+
+    assert agent.run_once() == 1
+    metrics = agent.metrics_snapshot()
+    assert metrics == {
+        "candidates_seen": 3,
+        "candidates_scored": 2,
+        "flags_submitted": 1,
+        "skipped": {"self": 1, "cooldown": 0, "below_threshold": 1},
+        "failures": {"scoring": 0, "submission": 0},
+    }
+    assert all("address" not in str(value) for value in metrics.values())
