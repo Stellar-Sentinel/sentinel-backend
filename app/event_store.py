@@ -3,11 +3,14 @@ import base64
 import json
 import logging
 import sqlite3
+import logging
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import HTTPException
+
+logger = logging.getLogger("sentinel.event_store")
 
 
 logger = logging.getLogger("sentinel.events")
@@ -50,6 +53,10 @@ class EventStore:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(flag_events)")}
             if "report_digest" not in columns:
                 connection.execute("ALTER TABLE flag_events ADD COLUMN report_digest TEXT")
+                logger.info(
+                    "event_store_schema_migration migration=add_report_digest status=applied",
+                    extra={"migration": "add_report_digest", "status": "applied"},
+                )
 
     @contextmanager
     def _connect(self):
