@@ -110,3 +110,22 @@ def test_run_once_continues_past_a_scoring_failure(monkeypatch):
 
     assert filed == 1
     assert filed_for == [CANDIDATE_B]
+
+
+def test_failed_submission_does_not_start_cooldown(monkeypatch):
+    settings = Settings(agent_secret_key=AGENT_SECRET, contract_id=CONTRACT_ID)
+    agent = monitor.MonitoringAgent(settings)
+    monkeypatch.setattr(monitor, "recent_network_accounts", lambda *args, **kwargs: [CANDIDATE_A])
+    monkeypatch.setattr(monitor, "score_account", lambda address, _settings: _result(address, threshold_exceeded=True))
+    attempts = []
+
+    def file_flag(address, result):
+        attempts.append(address)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary failure")
+
+    monkeypatch.setattr(agent, "_file_flag", file_flag)
+
+    assert agent.run_once() == 0
+    assert agent.run_once() == 1
+    assert attempts == [CANDIDATE_A, CANDIDATE_A]
