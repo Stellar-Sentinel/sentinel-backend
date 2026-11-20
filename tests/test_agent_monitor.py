@@ -1,3 +1,5 @@
+import logging
+
 from app.agents import monitor
 from app.config import Settings
 
@@ -97,7 +99,8 @@ def test_monitoring_agent_exposes_safe_authorization_context():
         pass
 
 
-def test_run_once_skips_self_cooldown_and_non_threshold_candidates(monkeypatch):
+def test_run_once_skips_self_cooldown_and_non_threshold_candidates(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="sentinel.agent")
     settings = Settings(agent_secret_key=AGENT_SECRET, contract_id=CONTRACT_ID, agent_flag_cooldown_seconds=3600)
     agent = monitor.MonitoringAgent(settings)
 
@@ -124,6 +127,7 @@ def test_run_once_skips_self_cooldown_and_non_threshold_candidates(monkeypatch):
     filed_again = agent.run_once()
     assert filed_again == 0
     assert filed_for == [CANDIDATE_A]
+    assert "count=3" in caplog.text
 
 
 def test_run_once_continues_past_a_scoring_failure(monkeypatch):
