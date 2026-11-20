@@ -23,26 +23,34 @@ logger = logging.getLogger("sentinel.agent")
 
 _CONFIRMATION_TIMEOUT_SECONDS = 30
 _CONFIRMATION_POLL_SECONDS = 3
+REPORT_DIGEST_SCHEMA_VERSION = 1
+
+
+def canonical_report(result: dict) -> dict:
+    """Return the versioned, normalized fields authenticated by a report digest."""
+    return {
+        "as_of": None if result.get("as_of") is None else str(result["as_of"]),
+        "address": str(result["address"]),
+        "report_schema_version": REPORT_DIGEST_SCHEMA_VERSION,
+        "risk_level": str(result["risk_level"]),
+        "score": int(result["score"]),
+        "scoring_policy_version": str(result["scoring_policy_version"]),
+        "threshold": int(result["threshold"]),
+    }
 
 
 def report_digest(result: dict) -> bytes:
-    """SHA-256 of the canonical off-chain report a `flaggedv2` event attests to.
+    """SHA-256 of the versioned report `flaggedv2` events attest to.
 
-    Canonical bytes are compact, sort-keyed JSON of the fields below. Any
-    off-chain consumer that wants to verify a digest against a stored report
-    must hash the same fields the same way.
+    Canonical bytes are compact, sort-keyed JSON with explicit number/string/
+    null normalization. Consumers can select the canonical schema by its
+    ``report_schema_version`` before independently checking the digest.
     """
     canonical = json.dumps(
-        {
-            "address": result["address"],
-            "score": result["score"],
-            "risk_level": result["risk_level"],
-            "threshold": result["threshold"],
-            "scoring_policy_version": result["scoring_policy_version"],
-            "as_of": result["as_of"],
-        },
+        canonical_report(result),
         sort_keys=True,
         separators=(",", ":"),
+        ensure_ascii=True,
     ).encode("utf-8")
     return hashlib.sha256(canonical).digest()
 
