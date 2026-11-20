@@ -93,12 +93,14 @@ class EventStore:
                         event.get("report_digest"),
                     ),
                 )
-            if next_cursor:
-                connection.execute(
-                    """INSERT INTO ingestion_state(scope, cursor) VALUES (?, ?)
-                    ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor""",
-                    (scope, next_cursor),
-                )
+            # Persist the terminal state as well as continuation cursors. A
+            # NULL cursor means the retained range is caught up; leaving the
+            # previous cursor in place would replay the final page forever.
+            connection.execute(
+                """INSERT INTO ingestion_state(scope, cursor) VALUES (?, ?)
+                ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor""",
+                (scope, next_cursor),
+            )
             connection.commit()
 
     def page(self, limit: int, scope: str, cursor: str | None = None) -> dict:
