@@ -72,6 +72,11 @@ async def _run_agent_forever():
 
 @asynccontextmanager
 async def lifespan(_app):
+    if settings.contract_id:
+        # Open (and migrate) the event store before serving. A schema that
+        # cannot be migrated must stop startup, not surface later as failing
+        # requests or an ingestion task that died in the background.
+        await asyncio.to_thread(get_event_store, settings.event_store_path)
     client = httpx.Client(
         timeout=settings.request_timeout_seconds,
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),

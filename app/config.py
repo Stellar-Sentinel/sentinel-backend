@@ -64,6 +64,10 @@ class Settings(BaseSettings):
             "trusted_proxy_count": len(self.trusted_proxy_networks),
         }
     event_store_path: str = "./data/events.sqlite3"
+    # Startup refuses an event store migrated by a newer release. Migrations
+    # are additive, so enabling this lets an older release keep reading and
+    # writing that file during a deliberate code rollback.
+    event_store_allow_newer_schema: bool = False
     event_ingest_interval_seconds: int = Field(default=30, gt=0, le=86_400)
     # Catch-up bounds: one sync reads at most max_pages * page_size events.
     event_ingest_page_size: int = Field(default=100, ge=1, le=1_000)

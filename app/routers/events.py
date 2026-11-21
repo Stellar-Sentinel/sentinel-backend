@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models import EventsResponse, IngestionStatusResponse
 from app.config import get_settings
-from app.event_store import get_event_store
+from app.event_store import EventStoreSchemaError, get_event_store
 from app.metrics import ingestion_metrics
 from app.stellar import _public_endpoint, cursor_ledger, ingestion_scope, sync_flag_events
 
@@ -66,7 +66,7 @@ def get_ingestion_status():
 
     try:
         stored_cursor = get_event_store(settings.event_store_path).ingestion_cursor(ingestion_scope(settings))
-    except sqlite3.Error:
+    except (sqlite3.Error, EventStoreSchemaError):
         logger.warning(
             "event_ingestion_status store=unavailable",
             extra={"event": "ingestion_status", "store": "unavailable"},
