@@ -75,6 +75,8 @@ uvicorn app.main:app --reload
 
 Open [http://localhost:8000/docs](http://localhost:8000/docs). Set the frontend's `NEXT_PUBLIC_API_BASE_URL` to this API origin and allow the frontend origin in `CORS_ORIGINS`.
 
+See the [CORS and trusted proxy operations runbook](docs/CORS_AND_PROXY_OPERATIONS.md) for exact-origin matching, forwarded-header assumptions, deployment and rollback steps, and a reproducible preflight check. The generated OpenAPI description also records these security boundaries.
+
 For private deployments, set a random `API_KEY` of at least 32 characters and send it as `Authorization: Bearer <API_KEY>` to business API routes. `/health`, API documentation, and CORS preflight remain accessible. Leave `API_KEY` empty for local development.
 
 ## Commands
