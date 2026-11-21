@@ -12,7 +12,7 @@ def test_policy_rejects_invalid_threshold_order():
 
 
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, -1])
-def test_screening_ignores_non_finite_transfer_amounts(value):
+def test_screening_ignores_invalid_transfer_amounts(value):
     assert stellar._finite_float(value) == 0.0
 
 
