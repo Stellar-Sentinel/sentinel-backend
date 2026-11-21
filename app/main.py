@@ -98,7 +98,12 @@ async def lifespan(_app):
 
 app = FastAPI(
     title="Stellar Sentinel API",
-    description="Read-only Stellar account screening and Soroban contract event API.",
+    description=(
+        "Read-only Stellar account screening and Soroban contract event API. "
+        "Browser access is limited to exact origins in CORS_ORIGINS; forwarded "
+        "client addresses affect screening rate limits only when the direct peer "
+        "belongs to TRUSTED_PROXY_CIDRS. See docs/CORS_AND_PROXY_OPERATIONS.md."
+    ),
     version="0.1.0",
     lifespan=lifespan,
 )
