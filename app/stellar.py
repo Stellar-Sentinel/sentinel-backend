@@ -19,6 +19,7 @@ from app.config import Settings, get_settings
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 HORIZON_OPERATION_PAGE_SIZE = 200
 logger = logging.getLogger(__name__)
+event_logger = logging.getLogger("sentinel.events")
 _screening_cache = OrderedDict()
 _screening_cache_lock = threading.Lock()
 
@@ -634,10 +635,16 @@ def fetch_flag_event_page(limit: int, cursor: str | None = None,
         topics = [_native(topic) for topic in raw_topics]
         is_v2 = bool(topics) and topics[0] == "flaggedv2"
         raw_value = event.get("valueJson", event.get("value"))
+        report_digest = _bytes32_hex(topics[3]) if is_v2 and len(topics) > 3 else None
+        if is_v2 and report_digest is None:
+            event_logger.warning(
+                "event_topic_decode event=malformed_report_digest",
+                extra={"event": "malformed_report_digest"},
+            )
         output.append({"id": event.get("id"), "ledger": event.get("ledger"),
                        "created_at": event.get("ledgerClosedAt"), "agent": topics[1] if len(topics) > 1 else None,
                        "subject": topics[2] if len(topics) > 2 else None, "score": _native(raw_value),
-                       "report_digest": _bytes32_hex(topics[3]) if is_v2 and len(topics) > 3 else None,
+                       "report_digest": report_digest,
                        "contract_id": event.get("contractId", settings.contract_id), "tx_hash": event.get("txHash")})
     return output, result.get("cursor")
 
