@@ -46,6 +46,15 @@ def test_store_persists_cursor_and_deduplicates_events_after_restart(tmp_path):
     assert deduplicated.page(limit=10, scope=SCOPE)["events"][0]["score"] == 90
 
 
+def test_store_clears_cursor_when_replay_reaches_the_end(tmp_path):
+    store = EventStore(str(tmp_path / "events.sqlite3"))
+    store.save_page([_event("event-1", 10, 70)], "resume-here", SCOPE)
+
+    store.save_page([_event("event-1", 10, 70)], None, SCOPE)
+
+    assert store.ingestion_cursor(SCOPE) is None
+
+
 def test_store_persists_flaggedv2_report_digest(tmp_path):
     store = EventStore(str(tmp_path / "events.sqlite3"))
     digest = "ab" * 32
