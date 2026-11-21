@@ -86,7 +86,7 @@ def recent_network_accounts(settings: Settings, limit: int) -> list[str]:
         if not isinstance(record, dict):
             continue
         account = record.get("source_account")
-        if isinstance(account, str) and account not in seen:
+        if isinstance(account, str) and account and account not in seen:
             seen.append(account)
     return seen
 
