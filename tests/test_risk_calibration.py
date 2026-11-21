@@ -19,6 +19,9 @@ def operation(letter: str, amount: str = "1") -> dict:
 
 
 def score_with(records, *, sequence="100", settings=None, monkeypatch=None):
+    # Each fixture represents an independent Horizon response. Avoid reusing a
+    # previous result from the process-wide screening cache between tests.
+    stellar.clear_screening_cache()
     monkeypatch.setattr(
         stellar,
         "_get",
