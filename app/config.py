@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     def trusted_proxy_networks(self):
         return [ip_network(item.strip(), strict=False)
                 for item in self.trusted_proxy_cidrs.split(",") if item.strip()]
+
+    def safe_summary(self) -> dict[str, object]:
+        """Return deployment diagnostics without secrets or credentialed URLs."""
+        return {
+            "environment": self.environment,
+            "network_passphrase": self.network_passphrase,
+            "contract_configured": bool(self.contract_id),
+            "api_key_configured": bool(self.api_key),
+            "agent_enabled": self.agent_enabled,
+            "agent_key_configured": bool(self.agent_secret_key),
+            "trusted_proxy_count": len(self.trusted_proxy_networks),
+        }
     event_store_path: str = "./data/events.sqlite3"
     event_ingest_interval_seconds: int = Field(default=30, gt=0, le=86_400)
     agent_enabled: bool = False
