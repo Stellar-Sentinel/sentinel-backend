@@ -4,10 +4,11 @@ from app import stellar
 from app.main import app
 
 
-ADDRESS = "G" + "A" * 55
+ADDRESS = "GAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQDZ7H"
 
 
 def test_issued_assets_keep_same_code_separate_by_issuer(monkeypatch):
+    stellar.clear_screening_cache()
     monkeypatch.setattr(stellar, "_get", lambda url, **kwargs: {
         "sequence": "1",
         "balances": [
