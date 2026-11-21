@@ -82,6 +82,25 @@ def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
 
 
+def test_account_validation_rejects_noncanonical_shapes_before_upstream(monkeypatch):
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("invalid addresses must not reach Horizon")
+
+    monkeypatch.setattr(stellar, "_get", unexpected_request)
+    invalid_values = (
+        ADDRESS.lower(),
+        f" {ADDRESS}",
+        f"{ADDRESS} ",
+        ADDRESS[:-1],
+        "M" + ADDRESS[1:],
+        "G" + "A" * 55,
+    )
+
+    for value in invalid_values:
+        assert not is_valid_account_id(value)
+        assert client.post("/risk/score", json={"address": value}).status_code == 422
+
+
 def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
     address = "G" + "Z" * 55
     with caplog.at_level("INFO", logger="sentinel.request"):
