@@ -9,7 +9,14 @@ from app.config import get_settings
 from app.middleware.api_key import ApiKeyMiddleware
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
+from app.stellar import (
+    classify_ingestion_failure,
+    close_http_client,
+    ingestion_retry_delay,
+    network_status,
+    set_http_client,
+    sync_flag_events,
+)
 from app.routers import accounts, health, events, risk
 from app.models import NetworkStatusResponse
 from app.request_id import RequestIDMiddleware
@@ -25,12 +32,24 @@ async def _ingest_events_forever():
     if not settings.contract_id:
         return
     store = get_event_store(settings.event_store_path)
+    consecutive_failures = 0
     while True:
         try:
             await asyncio.to_thread(sync_flag_events, store, settings)
+            consecutive_failures = 0
         except Exception as exc:
-            logger.warning("Soroban event ingestion failed (%s)", type(exc).__name__)
-        await asyncio.sleep(settings.event_ingest_interval_seconds)
+            consecutive_failures += 1
+            # sync_flag_events already logged the failure detail; this line
+            # records the backoff decision with the same fixed label.
+            failure = classify_ingestion_failure(exc)
+            delay = ingestion_retry_delay(consecutive_failures, settings)
+            logger.warning(
+                "event_ingestion_backoff failure=%s consecutive_failures=%s next_attempt_seconds=%s",
+                failure, consecutive_failures, delay,
+                extra={"event": "ingestion_backoff", "failure": failure,
+                       "consecutive_failures": consecutive_failures, "next_attempt_seconds": delay},
+            )
+        await asyncio.sleep(ingestion_retry_delay(consecutive_failures, settings))
 
 
 async def _run_agent_forever():
@@ -54,6 +73,11 @@ async def _run_agent_forever():
 
 @asynccontextmanager
 async def lifespan(_app):
+    if settings.contract_id:
+        # Open (and migrate) the event store before serving. A schema that
+        # cannot be migrated must stop startup, not surface later as failing
+        # requests or an ingestion task that died in the background.
+        await asyncio.to_thread(get_event_store, settings.event_store_path)
     client = httpx.Client(
         timeout=settings.request_timeout_seconds,
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
@@ -75,7 +99,12 @@ async def lifespan(_app):
 
 app = FastAPI(
     title="Stellar Sentinel API",
-    description="Read-only Stellar account screening and Soroban contract event API.",
+    description=(
+        "Read-only Stellar account screening and Soroban contract event API. "
+        "Browser access is limited to exact origins in CORS_ORIGINS; forwarded "
+        "client addresses affect screening rate limits only when the direct peer "
+        "belongs to TRUSTED_PROXY_CIDRS. See docs/CORS_AND_PROXY_OPERATIONS.md."
+    ),
     version="0.1.0",
     lifespan=lifespan,
 )
