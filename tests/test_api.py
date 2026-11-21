@@ -411,6 +411,20 @@ def test_risk_thresholds_and_weights_are_configurable_and_bounded(monkeypatch):
 
     assert result["score"] == 100
     assert result["risk_level"] == "high"
+
+
+def test_risk_policy_version_is_returned_with_threshold_decision(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda url, **kwargs: {
+        "sequence": "10",
+        "balances": [],
+    } if "/accounts/" in url else {"_embedded": {"records": []}})
+
+    response = client.post("/risk/score", json={"address": ADDRESS})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scoring_policy_version"] == "1.0.0"
+    assert payload["threshold_exceeded"] == (payload["score"] >= payload["threshold"])
     assert result["threshold"] == 60
     assert result["threshold_exceeded"] is True
     assert "At least 1 operation was observed" in result["signals"][0]["explanation"]
