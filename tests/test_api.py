@@ -61,6 +61,31 @@ def test_request_id_is_propagated_or_generated():
     assert len(rejected.headers["x-request-id"]) == 32
 
 
+def test_request_id_grammar_is_bounded_and_deterministic():
+    accepted_value = "a" * 64
+    accepted = client.get("/health", headers={"X-Request-ID": accepted_value})
+    assert accepted.headers["x-request-id"] == accepted_value
+
+    for invalid_value in ("a" * 65, "contains space", "contains/slash", ""):
+        response = client.get("/health", headers={"X-Request-ID": invalid_value})
+        generated = response.headers["x-request-id"]
+        assert generated != invalid_value
+        assert len(generated) == 32
+        assert all(character in "0123456789abcdef" for character in generated)
+
+
+def test_security_headers_protect_account_specific_screening_results(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {"sequence": "10", "balances": []})
+
+    response = client.post("/risk/score", json={"address": ADDRESS})
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     assert is_valid_account_id(ADDRESS)
     assert is_valid_account_id(MUXED_ADDRESS)
@@ -82,6 +107,25 @@ def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     corrupted = MUXED_ADDRESS[:-2] + ("A" if MUXED_ADDRESS[-2] != "A" else "B") + MUXED_ADDRESS[-1]
     assert not is_valid_account_id(corrupted)
     assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
+
+
+def test_account_validation_rejects_noncanonical_shapes_before_upstream(monkeypatch):
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("invalid addresses must not reach Horizon")
+
+    monkeypatch.setattr(stellar, "_get", unexpected_request)
+    invalid_values = (
+        ADDRESS.lower(),
+        f" {ADDRESS}",
+        f"{ADDRESS} ",
+        ADDRESS[:-1],
+        "M" + ADDRESS[1:],
+        "G" + "A" * 55,
+    )
+
+    for value in invalid_values:
+        assert not is_valid_account_id(value)
+        assert client.post("/risk/score", json={"address": value}).status_code == 422
 
 
 def test_request_log_uses_route_template_without_sensitive_inputs(caplog):

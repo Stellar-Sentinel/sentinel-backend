@@ -50,6 +50,22 @@ def test_non_screening_routes_are_not_rate_limited():
     assert client.get("/health").status_code == 200
 
 
+def test_forwarded_chain_has_a_bounded_hop_count():
+    middleware = ScreeningRateLimitMiddleware(
+        app=None,
+        requests=5,
+        window_seconds=60,
+        trusted_proxies=[ip_network("10.0.0.0/8")],
+    )
+    forwarded = ", ".join(["203.0.113.8"] * 17)
+    scope = {
+        "client": ("10.0.0.2", 1234),
+        "headers": [(b"x-forwarded-for", forwarded.encode("ascii"))],
+    }
+
+    assert middleware._client_ip(scope) == "10.0.0.2"
+
+
 def test_rate_limit_settings_validate_limits_and_proxy_cidrs():
     settings = Settings(
         screening_rate_limit_requests=5,
