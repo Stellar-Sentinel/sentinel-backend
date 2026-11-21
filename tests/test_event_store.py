@@ -40,7 +40,8 @@ def test_store_persists_cursor_and_deduplicates_events_after_restart(tmp_path, c
     assert second_page["events"] == [_event("event-1", 10, 70)]
     assert second_page["next_cursor"] is None
 
-    restarted.save_page([_event("event-2", 11, 1)], "rpc-cursor-2", SCOPE)
+    with caplog.at_level("INFO", logger="sentinel.event_store"):
+        restarted.save_page([_event("event-2", 11, 1)], "rpc-cursor-2", SCOPE)
     deduplicated = EventStore(path)
     assert deduplicated.ingestion_cursor(SCOPE) == "rpc-cursor-2"
     assert deduplicated.page(limit=10, scope=SCOPE)["events"][0]["score"] == 90

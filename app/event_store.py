@@ -3,7 +3,6 @@ import base64
 import json
 import logging
 import sqlite3
-import logging
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -11,9 +10,6 @@ from pathlib import Path
 from fastapi import HTTPException
 
 logger = logging.getLogger("sentinel.event_store")
-
-
-logger = logging.getLogger("sentinel.events")
 
 
 class EventStore:
