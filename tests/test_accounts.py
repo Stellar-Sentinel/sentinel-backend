@@ -90,6 +90,24 @@ def test_account_operations_normalize_native_payment_and_short_page(monkeypatch)
     assert response.json()["next_cursor"] is None
 
 
+def test_account_operations_use_starting_balance_for_create_account(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {
+        "_embedded": {"records": [{
+            "id": "create-1",
+            "type": "create_account",
+            "starting_balance": "1.5",
+            "asset_type": "native",
+        }]}
+    })
+
+    response = client.get(f"/accounts/{ADDRESS}/operations?limit=20")
+
+    assert response.status_code == 200
+    assert response.json()["operations"][0]["amounts"] == [
+        {"kind": "amount", "value": "1.5", "asset": {"type": "native"}}
+    ]
+
+
 def test_account_operations_reject_invalid_address_page_size_and_cursor():
     assert client.get("/accounts/not-an-address/operations").status_code == 422
     assert client.get(f"/accounts/{ADDRESS}/operations?limit=101").status_code == 422

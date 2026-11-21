@@ -1,3 +1,5 @@
+import logging
+
 from app.agents import monitor
 from app.config import Settings
 
@@ -44,6 +46,30 @@ def test_report_digest_rejects_incomplete_canonical_report():
         assert "as_of" in str(error)
 
 
+def test_report_digest_normalizes_values_and_versions_schema():
+    result = _result(CANDIDATE_A, threshold_exceeded=True)
+    result.update(
+        score="85",
+        threshold="70",
+        risk_level="high",
+        scoring_policy_version=1,
+        as_of=None,
+    )
+
+    canonical = monitor.canonical_report(result)
+
+    assert canonical == {
+        "address": CANDIDATE_A,
+        "score": 85,
+        "threshold": 70,
+        "risk_level": "high",
+        "scoring_policy_version": "1",
+        "as_of": None,
+        "report_schema_version": 1,
+    }
+    assert monitor.report_digest(result) == monitor.report_digest(dict(result))
+
+
 def test_recent_network_accounts_dedupes_preserves_order_and_skips_malformed(monkeypatch):
     records = [
         {"source_account": CANDIDATE_A},
@@ -73,7 +99,8 @@ def test_monitoring_agent_requires_secret_and_contract_id():
         pass
 
 
-def test_run_once_skips_self_cooldown_and_non_threshold_candidates(monkeypatch):
+def test_run_once_skips_self_cooldown_and_non_threshold_candidates(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="sentinel.agent")
     settings = Settings(agent_secret_key=AGENT_SECRET, contract_id=CONTRACT_ID, agent_flag_cooldown_seconds=3600)
     agent = monitor.MonitoringAgent(settings)
 
@@ -100,6 +127,7 @@ def test_run_once_skips_self_cooldown_and_non_threshold_candidates(monkeypatch):
     filed_again = agent.run_once()
     assert filed_again == 0
     assert filed_for == [CANDIDATE_A]
+    assert "count=3" in caplog.text
 
 
 def test_run_once_continues_past_a_scoring_failure(monkeypatch):
