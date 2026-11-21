@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.models import EventsResponse
 from app.config import get_settings
 from app.event_store import get_event_store
-from app.stellar import _public_endpoint, sync_flag_events
+from app.stellar import _public_endpoint, ingestion_scope, sync_flag_events
 
 router = APIRouter()
 
@@ -22,8 +22,7 @@ def list_events(limit: int = Query(20, ge=1, le=100), cursor: str | None = Query
         if exc.status_code not in {502, 503}:
             raise
         ingestion_status = "stale"
-    scope = f"{settings.network_passphrase}:{settings.contract_id}"
-    result = store.page(limit, scope, cursor)
+    result = store.page(limit, ingestion_scope(settings), cursor)
     result["source"] = {
         "rpc_url": _public_endpoint(settings.soroban_rpc_url),
         "network": settings.network_passphrase,
