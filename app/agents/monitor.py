@@ -129,10 +129,16 @@ class MonitoringAgent:
 
         Returns the number of flags successfully filed in this cycle.
         """
+        candidate_limit = self.settings.agent_scan_candidate_limit
         candidates = select_candidate_accounts(
-            recent_network_accounts(self.settings, self.settings.agent_scan_candidate_limit),
+            recent_network_accounts(self.settings, candidate_limit),
             {self.keypair.public_key},
-            self.settings.agent_scan_candidate_limit,
+            candidate_limit,
+        )
+        logger.info(
+            "Selected monitoring candidates (count=%d limit=%d)",
+            len(candidates),
+            candidate_limit,
         )
         filed = 0
         for address in candidates:
