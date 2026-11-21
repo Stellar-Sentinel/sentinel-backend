@@ -161,7 +161,12 @@ def test_untracked_current_database_is_adopted_without_schema_changes(tmp_path, 
     with caplog.at_level(logging.INFO, logger="sentinel.event_store"):
         store = EventStore(str(path))
 
-    assert {record.status for record in _schema_records(caplog)} == {"recorded"}
+    statuses = [(record.migration, record.status) for record in _schema_records(caplog)]
+    assert statuses == [
+        ("create_event_tables", "recorded"),
+        ("add_report_digest", "recorded"),
+        ("add_agent_cooldowns", "applied"),
+    ]
     assert len(_history(path)) == LATEST_SCHEMA_VERSION
     assert store.page(limit=10, scope=SCOPE)["events"][0]["report_digest"] == "ab" * 32
 
@@ -271,7 +276,7 @@ def test_history_with_a_gap_is_rejected(tmp_path):
         EventStore(str(path))
 
     assert error.value.reason == "history_mismatch"
-    assert [version for version, _, _ in _history(path)] == [2]
+    assert [version for version, _, _ in _history(path)] == [2, 3]
 
 
 def test_failed_migration_rolls_back_the_whole_upgrade(tmp_path, caplog):
