@@ -11,6 +11,17 @@ from fastapi import HTTPException
 
 logger = logging.getLogger("sentinel.event_store")
 
+# Sentinel for save_page callers that do not need a cursor precondition.
+_ANY_CURSOR = object()
+
+
+class CursorConflictError(RuntimeError):
+    """The stored ingestion cursor moved since the caller last read it.
+
+    Raised instead of writing so that a slower, concurrent sync (another
+    worker process sharing the database) can never move the cursor backwards.
+    """
+
 
 class EventStore:
     def __init__(self, path: str):
@@ -66,14 +77,42 @@ class EventStore:
 
     def ingestion_cursor(self, scope: str) -> str | None:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT cursor FROM ingestion_state WHERE scope = ?", (scope,)
-            ).fetchone()
+            return self._read_cursor(connection, scope)
+
+    @staticmethod
+    def _read_cursor(connection, scope: str) -> str | None:
+        row = connection.execute(
+            "SELECT cursor FROM ingestion_state WHERE scope = ?", (scope,)
+        ).fetchone()
         return row["cursor"] if row else None
 
-    def save_page(self, events: list[dict], next_cursor: str | None, scope: str) -> None:
+    def reset_ingestion_cursor(self, scope: str, expected_cursor: str) -> bool:
+        """Forget the scope's cursor only if it still equals ``expected_cursor``.
+
+        Indexed events are kept. Returns False when another sync already
+        replaced the cursor, in which case nothing is changed.
+        """
+        with self._connect() as connection:
+            deleted = connection.execute(
+                "DELETE FROM ingestion_state WHERE scope = ? AND cursor = ?",
+                (scope, expected_cursor),
+            ).rowcount
+        return deleted == 1
+
+    def save_page(self, events: list[dict], next_cursor: str | None, scope: str,
+                  expected_cursor=_ANY_CURSOR) -> None:
+        """Insert a page of events and advance the cursor in one transaction.
+
+        When ``expected_cursor`` is given (``None`` meaning "no cursor stored
+        yet"), the write is a compare-and-set: if the stored cursor differs,
+        nothing is written and CursorConflictError is raised.
+        """
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if expected_cursor is not _ANY_CURSOR:
+                stored = self._read_cursor(connection, scope)
+                if stored != expected_cursor:
+                    raise CursorConflictError("ingestion cursor for scope changed concurrently")
             for event in events:
                 event_id = event.get("id")
                 ledger = event.get("ledger")

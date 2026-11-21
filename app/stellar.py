@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import base64
 import copy
 from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
 import re
 from urllib.parse import urlsplit, urlunsplit
 from email.utils import parsedate_to_datetime
@@ -15,6 +17,7 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import Settings, get_settings
+from app.event_store import CursorConflictError
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 HORIZON_OPERATION_PAGE_SIZE = 200
@@ -222,6 +225,18 @@ def _asset_context(account: dict) -> tuple[list[dict], int, float]:
     return assets, trustline_count, native_balance
 
 
+class SorobanRpcError(HTTPException):
+    """A JSON-RPC application error, keeping only the numeric error code.
+
+    The upstream message is deliberately dropped: it is provider-controlled
+    text and must not reach clients or logs.
+    """
+
+    def __init__(self, code: int | None):
+        super().__init__(status_code=502, detail="Soroban RPC returned an error")
+        self.code = code
+
+
 def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     try:
@@ -243,7 +258,9 @@ def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502, detail="Soroban RPC returned an invalid response")
     if payload.get("error"):
-        raise HTTPException(status_code=502, detail="Soroban RPC returned an error")
+        error = payload["error"]
+        code = error.get("code") if isinstance(error, dict) else None
+        raise SorobanRpcError(code if isinstance(code, int) and not isinstance(code, bool) else None)
     result = payload.get("result", {})
     if not isinstance(result, dict):
         raise HTTPException(status_code=502, detail="Soroban RPC returned an invalid result")
@@ -559,8 +576,11 @@ def fetch_flag_event_page(limit: int, cursor: str | None = None,
         oldest = health.get("oldestLedger")
         params["startLedger"] = max(requested_start, int(oldest)) if oldest is not None else requested_start
     result = _rpc("getEvents", params, settings)
+    raw_events = result.get("events") or []
+    if not isinstance(raw_events, list) or not all(isinstance(event, dict) for event in raw_events):
+        raise HTTPException(status_code=502, detail="Soroban RPC returned malformed events")
     output = []
-    for event in result.get("events", []):
+    for event in raw_events:
         # With xdrFormat="json", Soroban RPC returns topicJson/valueJson, not
         # topic/value; the topic/topics/value fallbacks cover older/other RPCs.
         raw_topics = event.get("topicJson", event.get("topic", event.get("topics", [])))
@@ -589,26 +609,182 @@ def list_flag_events(limit: int, cursor: str | None = None, settings: Settings |
                        "contract_id": settings.contract_id}}
 
 
-_MAX_CATCHUP_PAGES = 25
+# Default page budget per sync. Kept as a module constant because callers and
+# tests predate EVENT_INGEST_MAX_PAGES; the setting is the source of truth.
+_MAX_CATCHUP_PAGES = Settings.model_fields["event_ingest_max_pages"].default
+
+# Soroban RPC cursors are "<19-digit TOID>-<10-digit event index>", which sort
+# lexicographically in chain order. Any other provider format is treated as
+# opaque and only checked for shape and repetition.
+_TOID_CURSOR = re.compile(r"\d{19}-\d{10}")
+_OPAQUE_CURSOR = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+# JSON-RPC "invalid request" / "invalid params". Our filters are static, so
+# when a request carrying a persisted cursor gets one of these, the provider is
+# refusing the cursor itself, typically because it fell out of retention.
+_CURSOR_REJECTED_CODES = frozenset({-32600, -32602})
+
+_sync_locks: dict[tuple[str, str], threading.Lock] = {}
+_sync_locks_guard = threading.Lock()
 
 
-def sync_flag_events(store, settings: Settings | None = None) -> None:
-    """Advance ingestion, paging past empty RPC chunks until real events are found.
+@dataclass(frozen=True)
+class IngestionSyncResult:
+    """Outcome of one bounded ``sync_flag_events`` run.
 
-    Soroban RPC's getEvents scans a bounded ledger range per call and returns
-    a continuation cursor even when that range has no matching events, so one
-    call is not enough to reach real data after a cold start or a wide
-    EVENTS_LOOKBACK_LEDGERS. This pages forward (persisting the cursor each
-    step so progress survives a later failure) until a page has events, the
-    walk catches up to the current ledger (no next cursor), or the cursor
-    stops advancing — bounded so one HTTP-triggered sync can't run away.
+    ``stop_reason`` is one of:
+
+    - ``caught_up``: RPC returned no continuation cursor.
+    - ``cursor_stalled``: RPC handed back the cursor it was given.
+    - ``partial_page``: a non-empty page shorter than the page size.
+    - ``page_budget_exhausted``: ``EVENT_INGEST_MAX_PAGES`` pages were read;
+      the next sync resumes from the persisted cursor.
+    - ``sync_in_progress``: another sync for this scope is running in this
+      process; nothing was fetched.
+    - ``cursor_conflict``: another process advanced the cursor first; the
+      in-flight page was discarded rather than written over it.
+    """
+
+    scope: str
+    stop_reason: str
+    pages: int = 0
+    events: int = 0
+    cursor: str | None = None
+    cursor_reset: bool = False
+
+
+def ingestion_scope(settings: Settings) -> str:
+    """Cursor and event-identity scope: one per network passphrase and contract."""
+    return f"{settings.network_passphrase}:{settings.contract_id}"
+
+
+def ingestion_retry_delay(consecutive_failures: int, settings: Settings) -> float:
+    """Seconds the background indexer waits before its next sync.
+
+    A healthy loop polls every ``EVENT_INGEST_INTERVAL_SECONDS``. Each
+    consecutive failure doubles the wait, capped at
+    ``EVENT_INGEST_MAX_BACKOFF_SECONDS`` but never shorter than the interval.
+    """
+    interval = settings.event_ingest_interval_seconds
+    if consecutive_failures <= 0:
+        return float(interval)
+    # Clamp the exponent so a very long outage cannot grow the number unbounded.
+    backoff = interval * 2 ** min(consecutive_failures, 32)
+    return float(max(interval, min(backoff, settings.event_ingest_max_backoff_seconds)))
+
+
+def _checked_next_cursor(value, current: str | None, seen: set[str]) -> str | None:
+    """Validate RPC's continuation cursor before it is allowed near the store."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not _OPAQUE_CURSOR.fullmatch(value):
+        raise HTTPException(status_code=502, detail="Soroban RPC returned an invalid event cursor")
+    # Revisiting an earlier cursor (A -> B -> A) is a loop, not a stall.
+    moved_back = value != current and value in seen
+    if current and _TOID_CURSOR.fullmatch(value) and _TOID_CURSOR.fullmatch(current):
+        moved_back = moved_back or value < current
+    if moved_back:
+        raise HTTPException(status_code=502, detail="Soroban RPC event cursor moved backwards")
+    return value
+
+
+def _scope_lock(store, scope: str) -> threading.Lock:
+    key = (str(Path(store.path).expanduser().resolve()), scope)
+    with _sync_locks_guard:
+        return _sync_locks.setdefault(key, threading.Lock())
+
+
+def sync_flag_events(store, settings: Settings | None = None) -> IngestionSyncResult:
+    """Advance ingestion for the configured scope by a bounded amount of work.
+
+    Soroban RPC's getEvents scans a bounded ledger range per call and returns a
+    continuation cursor even when that range holds no matching events, so this
+    pages forward, persisting the cursor after every page, until RPC reports
+    no further cursor, the cursor stops advancing, a short non-empty page is
+    read, or ``EVENT_INGEST_MAX_PAGES`` pages have been consumed. Full pages
+    keep the walk going so a backlog drains without waiting a poll interval
+    per page.
+
+    Only one sync per store and scope runs at a time in a process; a caller
+    that finds one already running returns immediately. Across processes,
+    every cursor write is a compare-and-set, so a slower worker never moves
+    the cursor backwards.
+
+    RPC transport and HTTP failures propagate after the pages already saved
+    are committed. A cursor the provider rejects is handled according to
+    ``EVENT_INGEST_CURSOR_RECOVERY``.
     """
     settings = settings or get_settings()
-    scope = f"{settings.network_passphrase}:{settings.contract_id}"
+    scope = ingestion_scope(settings)
+    lock = _scope_lock(store, scope)
+    if not lock.acquire(blocking=False):
+        return IngestionSyncResult(scope, "sync_in_progress")
+    try:
+        result = _sync_scope(store, settings, scope)
+    finally:
+        lock.release()
+
+    noteworthy = result.events or result.cursor_reset or result.stop_reason in {
+        "page_budget_exhausted", "cursor_conflict"}
+    event_logger.log(
+        logging.INFO if noteworthy else logging.DEBUG,
+        "event_ingestion_sync stop_reason=%s pages=%s events=%s",
+        result.stop_reason, result.pages, result.events,
+        extra={"event": "ingestion_sync", "stop_reason": result.stop_reason,
+               "pages": result.pages, "events_read": result.events},
+    )
+    return result
+
+
+def _sync_scope(store, settings: Settings, scope: str) -> IngestionSyncResult:
     cursor = store.ingestion_cursor(scope)
-    for _ in range(_MAX_CATCHUP_PAGES):
-        events, next_cursor = fetch_flag_event_page(limit=100, cursor=cursor, settings=settings)
-        store.save_page(events, next_cursor, scope)
-        if events or next_cursor is None or next_cursor == cursor:
-            return
+    seen = {cursor} if cursor else set()
+    page_size = settings.event_ingest_page_size
+    pages = stored = 0
+    cursor_reset = False
+
+    def finish(stop_reason: str) -> IngestionSyncResult:
+        return IngestionSyncResult(scope, stop_reason, pages, stored, cursor, cursor_reset)
+
+    for _ in range(settings.event_ingest_max_pages):
+        try:
+            events, raw_next = fetch_flag_event_page(limit=page_size, cursor=cursor, settings=settings)
+        except SorobanRpcError as exc:
+            if cursor is None or exc.code not in _CURSOR_REJECTED_CODES:
+                raise
+            recovery = settings.event_ingest_cursor_recovery
+            event_logger.warning(
+                "event_ingestion_cursor_rejected rpc_error_code=%s recovery=%s",
+                exc.code, recovery,
+                extra={"event": "ingestion_cursor_rejected", "rpc_error_code": exc.code,
+                       "recovery": recovery},
+            )
+            # Reset at most once per run: if a fresh start is rejected too,
+            # the problem is not the cursor and should surface as a failure.
+            if recovery != "reset" or cursor_reset:
+                raise
+            if not store.reset_ingestion_cursor(scope, cursor):
+                return finish("cursor_conflict")
+            cursor, seen, cursor_reset = None, set(), True
+            continue
+
+        next_cursor = _checked_next_cursor(raw_next, cursor, seen)
+        try:
+            store.save_page(events, next_cursor, scope, expected_cursor=cursor)
+        except CursorConflictError:
+            return finish("cursor_conflict")
+        except ValueError as exc:
+            # A page with an unusable event is rejected whole and the cursor
+            # stays put; report it like any other malformed upstream payload.
+            raise HTTPException(status_code=502, detail="Soroban RPC returned a malformed event") from exc
+        pages += 1
+        stored += len(events)
+
+        if next_cursor is None:
+            return finish("caught_up")
+        if next_cursor == cursor:
+            return finish("cursor_stalled")
+        seen.add(next_cursor)
         cursor = next_cursor
+        if events and len(events) < page_size:
+            return finish("partial_page")
+    return finish("page_budget_exhausted")

@@ -9,7 +9,13 @@ from app.config import get_settings
 from app.middleware.api_key import ApiKeyMiddleware
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.stellar import close_http_client, network_status, set_http_client, sync_flag_events
+from app.stellar import (
+    close_http_client,
+    ingestion_retry_delay,
+    network_status,
+    set_http_client,
+    sync_flag_events,
+)
 from app.routers import accounts, health, events, risk
 from app.models import NetworkStatusResponse
 from app.request_id import RequestIDMiddleware
@@ -25,12 +31,19 @@ async def _ingest_events_forever():
     if not settings.contract_id:
         return
     store = get_event_store(settings.event_store_path)
+    consecutive_failures = 0
     while True:
         try:
             await asyncio.to_thread(sync_flag_events, store, settings)
+            consecutive_failures = 0
         except Exception as exc:
-            logger.warning("Soroban event ingestion failed (%s)", type(exc).__name__)
-        await asyncio.sleep(settings.event_ingest_interval_seconds)
+            consecutive_failures += 1
+            logger.warning(
+                "Soroban event ingestion failed (%s); consecutive failures: %s, next attempt in %ss",
+                type(exc).__name__, consecutive_failures,
+                ingestion_retry_delay(consecutive_failures, settings),
+            )
+        await asyncio.sleep(ingestion_retry_delay(consecutive_failures, settings))
 
 
 async def _run_agent_forever():
