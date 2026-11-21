@@ -1,30 +1,29 @@
 # Screening response cache
 
-The account screening path keeps a small in-process cache of successful
-responses. It reduces duplicate upstream reads while keeping the cache local
-to the application worker.
+Successful screening responses may be cached in-process to avoid repeating the
+same bounded Horizon reads during a short burst. The cache is an optimization,
+not a source of truth.
 
-## Key and lifecycle
+## Key and lifetime
 
-An entry is keyed by the network passphrase, Horizon URL, account address, and
-the complete active settings snapshot. A change to a scoring threshold,
-activity window, or upstream endpoint therefore cannot reuse a response made
-under different policy inputs.
-
-Entries expire after `SCREENING_CACHE_TTL_SECONDS` (15 seconds by default) and
-the cache evicts the least-recently-used entry after
+Entries are keyed by network passphrase, Horizon URL, account address, and the
+complete active settings snapshot. This prevents a response from one network,
+endpoint, account, or policy configuration being reused for another. Entries
+expire after `SCREENING_CACHE_TTL_SECONDS` (15 seconds by default), and the
+ordered cache evicts the least-recently-used entry when it exceeds
 `SCREENING_CACHE_MAX_ENTRIES` (256 by default). Set the TTL to `0` to disable
-caching. The service returns independent copies, so a caller cannot mutate the
-stored response for later callers.
+caching.
 
-The cache is process-local. Each worker or replica has its own entries, and a
-shared cache is intentionally not required for correctness. Upstream failures
-are never stored as successful screening responses.
+Each application worker has its own cache. Cache access uses a process-local
+lock, and `clear_screening_cache()` is available to tests and lifecycle code.
+Validated responses are deep-copied into and out of the cache; upstream errors
+are never converted into cached successes. Do not cache tokens, signing
+material, private user data, or raw upstream exception details.
 
-## Operations
+## Operations and tests
 
 Use a short TTL when rapid policy changes or near-real-time activity matter.
-Increase the maximum only after measuring process memory. When changing the
-policy, bump `RISK_POLICY_VERSION` and deploy the new settings together with
-the service so cached responses and the returned policy version remain easy to
-interpret.
+Increase the maximum only after measuring process memory. Deploy updated
+settings with policy changes and bump `RISK_POLICY_VERSION` so cached responses
+and reports remain interpretable. Tests should use synthetic accounts and
+mocked upstream calls; they must not depend on live-chain access.
