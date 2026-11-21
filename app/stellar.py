@@ -3,11 +3,14 @@ from datetime import datetime, timedelta, timezone
 import base64
 import copy
 from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
 import re
 from urllib.parse import urlsplit, urlunsplit
 from email.utils import parsedate_to_datetime
 import time
 import math
+import sqlite3
 import threading
 import logging
 
@@ -15,10 +18,13 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import Settings, get_settings
+from app.event_store import CursorConflictError
+from app.metrics import ingestion_metrics
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 HORIZON_OPERATION_PAGE_SIZE = 200
 cache_logger = logging.getLogger("sentinel.cache")
+event_logger = logging.getLogger("sentinel.events")
 _screening_cache = OrderedDict()
 _screening_cache_lock = threading.Lock()
 
@@ -180,6 +186,12 @@ def _get(url: str, params: dict | None = None, settings: Settings | None = None)
 
 
 def _asset_context(account: dict) -> tuple[list[dict], int, float]:
+    """Return displayable balances and count only issued-asset trustlines.
+
+    Horizon also exposes liquidity-pool shares in ``balances``. They are
+    account assets, but they are not trustlines, so they must not inflate the
+    trustline metric used by operators.
+    """
     assets = []
     trustline_count = 0
     native_balance = 0.0
@@ -216,10 +228,39 @@ def _asset_context(account: dict) -> tuple[list[dict], int, float]:
                 continue
             if balance.get("liquidity_pool_id") is not None:
                 asset["liquidity_pool_id"] = balance["liquidity_pool_id"]
-            trustline_count += 1
+            if asset_type.startswith("credit_"):
+                trustline_count += 1
         assets.append({"asset": asset, "balance": str(amount)})
 
     return assets, trustline_count, native_balance
+
+
+class SorobanRpcError(HTTPException):
+    """A JSON-RPC application error, keeping only the numeric error code.
+
+    The upstream message is deliberately dropped: it is provider-controlled
+    text and must not reach clients or logs.
+    """
+
+    def __init__(self, code: int | None):
+        super().__init__(status_code=502, detail="Soroban RPC returned an error")
+        self.code = code
+
+
+class IngestionCursorRejectedError(SorobanRpcError):
+    """RPC refused the persisted ingestion cursor and recovery did not apply."""
+
+
+class UpstreamDataError(HTTPException):
+    """Soroban RPC answered, but with data the indexer refuses to use.
+
+    ``failure`` is one of a fixed set of telemetry labels; ``detail`` stays
+    generic and never echoes upstream content.
+    """
+
+    def __init__(self, failure: str, detail: str):
+        super().__init__(status_code=502, detail=detail)
+        self.failure = failure
 
 
 def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
@@ -243,7 +284,9 @@ def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502, detail="Soroban RPC returned an invalid response")
     if payload.get("error"):
-        raise HTTPException(status_code=502, detail="Soroban RPC returned an error")
+        error = payload["error"]
+        code = error.get("code") if isinstance(error, dict) else None
+        raise SorobanRpcError(code if isinstance(code, int) and not isinstance(code, bool) else None)
     result = payload.get("result", {})
     if not isinstance(result, dict):
         raise HTTPException(status_code=502, detail="Soroban RPC returned an invalid result")
@@ -545,6 +588,22 @@ def _bytes32_hex(value) -> str | None:
     return None
 
 
+def _health_ledger(health: dict, field: str) -> int | None:
+    """Read a ledger number from getHealth; absent is allowed, garbage is not.
+
+    Before this check a non-numeric value raised TypeError/ValueError, which
+    surfaced as an unhandled 500 instead of a stale-ingestion upstream error.
+    """
+    value = health.get(field)
+    if value is None:
+        return None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,12}", value):
+        value = int(value)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    raise UpstreamDataError("rpc_invalid_response", "Soroban RPC returned an invalid ledger window")
+
+
 def fetch_flag_event_page(limit: int, cursor: str | None = None,
                           settings: Settings | None = None) -> tuple[list[dict], str | None]:
     settings = settings or get_settings()
@@ -564,23 +623,32 @@ def fetch_flag_event_page(limit: int, cursor: str | None = None,
         params["pagination"]["cursor"] = cursor
     else:
         health = _rpc("getHealth", {}, settings)
-        latest = int(health.get("latestLedger", 1))
-        requested_start = max(1, latest - settings.events_lookback_ledgers)
-        oldest = health.get("oldestLedger")
-        params["startLedger"] = max(requested_start, int(oldest)) if oldest is not None else requested_start
+        latest = _health_ledger(health, "latestLedger")
+        requested_start = max(1, (latest or 1) - settings.events_lookback_ledgers)
+        oldest = _health_ledger(health, "oldestLedger")
+        params["startLedger"] = max(requested_start, oldest) if oldest is not None else requested_start
     result = _rpc("getEvents", params, settings)
+    raw_events = result.get("events") or []
+    if not isinstance(raw_events, list) or not all(isinstance(event, dict) for event in raw_events):
+        raise UpstreamDataError("malformed_page", "Soroban RPC returned malformed events")
     output = []
-    for event in result.get("events", []):
+    for event in raw_events:
         # With xdrFormat="json", Soroban RPC returns topicJson/valueJson, not
         # topic/value; the topic/topics/value fallbacks cover older/other RPCs.
         raw_topics = event.get("topicJson", event.get("topic", event.get("topics", [])))
         topics = [_native(topic) for topic in raw_topics]
         is_v2 = bool(topics) and topics[0] == "flaggedv2"
         raw_value = event.get("valueJson", event.get("value"))
+        report_digest = _bytes32_hex(topics[3]) if is_v2 and len(topics) > 3 else None
+        if is_v2 and report_digest is None:
+            event_logger.warning(
+                "event_topic_decode event=malformed_report_digest",
+                extra={"event": "malformed_report_digest"},
+            )
         output.append({"id": event.get("id"), "ledger": event.get("ledger"),
                        "created_at": event.get("ledgerClosedAt"), "agent": topics[1] if len(topics) > 1 else None,
                        "subject": topics[2] if len(topics) > 2 else None, "score": _native(raw_value),
-                       "report_digest": _bytes32_hex(topics[3]) if is_v2 and len(topics) > 3 else None,
+                       "report_digest": report_digest,
                        "contract_id": event.get("contractId", settings.contract_id), "tx_hash": event.get("txHash")})
     return output, result.get("cursor")
 
@@ -593,26 +661,282 @@ def list_flag_events(limit: int, cursor: str | None = None, settings: Settings |
                        "contract_id": settings.contract_id}}
 
 
-_MAX_CATCHUP_PAGES = 25
+# Default page budget per sync. Kept as a module constant because callers and
+# tests predate EVENT_INGEST_MAX_PAGES; the setting is the source of truth.
+_MAX_CATCHUP_PAGES = Settings.model_fields["event_ingest_max_pages"].default
+
+# Soroban RPC cursors are "<19-digit TOID>-<10-digit event index>", which sort
+# lexicographically in chain order. Any other provider format is treated as
+# opaque and only checked for shape and repetition.
+_TOID_CURSOR = re.compile(r"\d{19}-\d{10}")
+_OPAQUE_CURSOR = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+# JSON-RPC "invalid request" / "invalid params". Our filters are static, so
+# when a request carrying a persisted cursor gets one of these, the provider is
+# refusing the cursor itself, typically because it fell out of retention.
+_CURSOR_REJECTED_CODES = frozenset({-32600, -32602})
+
+_sync_locks: dict[tuple[str, str], threading.Lock] = {}
+_sync_locks_guard = threading.Lock()
 
 
-def sync_flag_events(store, settings: Settings | None = None) -> None:
-    """Advance ingestion, paging past empty RPC chunks until real events are found.
+@dataclass(frozen=True)
+class IngestionSyncResult:
+    """Outcome of one bounded ``sync_flag_events`` run.
 
-    Soroban RPC's getEvents scans a bounded ledger range per call and returns
-    a continuation cursor even when that range has no matching events, so one
-    call is not enough to reach real data after a cold start or a wide
-    EVENTS_LOOKBACK_LEDGERS. This pages forward (persisting the cursor each
-    step so progress survives a later failure) until a page has events, the
-    walk catches up to the current ledger (no next cursor), or the cursor
-    stops advancing — bounded so one HTTP-triggered sync can't run away.
+    ``stop_reason`` is one of:
+
+    - ``caught_up``: RPC returned no continuation cursor.
+    - ``cursor_stalled``: RPC handed back the cursor it was given.
+    - ``partial_page``: a non-empty page shorter than the page size.
+    - ``page_budget_exhausted``: ``EVENT_INGEST_MAX_PAGES`` pages were read;
+      the next sync resumes from the persisted cursor.
+    - ``time_budget_exhausted``: ``EVENT_INGEST_SYNC_BUDGET_SECONDS`` elapsed
+      between pages; the next sync resumes from the persisted cursor.
+    - ``sync_in_progress``: another sync for this scope is running in this
+      process; nothing was fetched.
+    - ``cursor_conflict``: another process advanced the cursor first; the
+      in-flight page was discarded rather than written over it.
+    """
+
+    scope: str
+    stop_reason: str
+    pages: int = 0
+    events: int = 0
+    cursor: str | None = None
+    cursor_reset: bool = False
+
+
+def ingestion_scope(settings: Settings) -> str:
+    """Cursor and event-identity scope: one per network passphrase and contract."""
+    return f"{settings.network_passphrase}:{settings.contract_id}"
+
+
+def ingestion_retry_delay(consecutive_failures: int, settings: Settings) -> float:
+    """Seconds the background indexer waits before its next sync.
+
+    A healthy loop polls every ``EVENT_INGEST_INTERVAL_SECONDS``. Each
+    consecutive failure doubles the wait, capped at
+    ``EVENT_INGEST_MAX_BACKOFF_SECONDS`` but never shorter than the interval.
+    """
+    interval = settings.event_ingest_interval_seconds
+    if consecutive_failures <= 0:
+        return float(interval)
+    # Clamp the exponent so a very long outage cannot grow the number unbounded.
+    backoff = interval * 2 ** min(consecutive_failures, 32)
+    return float(max(interval, min(backoff, settings.event_ingest_max_backoff_seconds)))
+
+
+def _checked_next_cursor(value, current: str | None, seen: set[str]) -> str | None:
+    """Validate RPC's continuation cursor before it is allowed near the store."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not _OPAQUE_CURSOR.fullmatch(value):
+        raise UpstreamDataError("invalid_cursor", "Soroban RPC returned an invalid event cursor")
+    # Revisiting an earlier cursor (A -> B -> A) is a loop, not a stall.
+    moved_back = value != current and value in seen
+    if current and _TOID_CURSOR.fullmatch(value) and _TOID_CURSOR.fullmatch(current):
+        moved_back = moved_back or value < current
+    if moved_back:
+        raise UpstreamDataError("cursor_regressed", "Soroban RPC event cursor moved backwards")
+    return value
+
+
+def cursor_ledger(cursor: str | None) -> int | None:
+    """Ledger sequence encoded in a standard Soroban cursor, else None.
+
+    The TOID packs the ledger into its upper 32 bits. Opaque provider cursors
+    carry no position we can trust, so they report no ledger.
+    """
+    if not cursor or not _TOID_CURSOR.fullmatch(cursor):
+        return None
+    return int(cursor[:19]) >> 32
+
+
+def classify_ingestion_failure(exc: BaseException) -> str:
+    """Map an exception raised by a sync onto a fixed telemetry label.
+
+    Labels come from ``app.metrics.INGESTION_FAILURES`` and never include
+    exception text, URLs, cursors, or provider messages.
+    """
+    if isinstance(exc, UpstreamDataError):
+        return exc.failure
+    if isinstance(exc, IngestionCursorRejectedError):
+        return "cursor_rejected"
+    if isinstance(exc, SorobanRpcError):
+        return "rpc_error"
+    if isinstance(exc, HTTPException):
+        # _rpc chains the transport exception, which separates a slow
+        # provider from an unreachable one without parsing messages.
+        cause = exc.__cause__
+        if isinstance(cause, httpx.TimeoutException):
+            return "rpc_timeout"
+        if isinstance(cause, httpx.HTTPStatusError):
+            return "rpc_http_error"
+        if isinstance(cause, httpx.HTTPError):
+            return "rpc_unavailable"
+        if exc.status_code == 502:
+            return "rpc_invalid_response"
+        return "upstream_error"
+    if isinstance(exc, sqlite3.Error):
+        return "store_error"
+    return "internal_error"
+
+
+def _scope_lock(store, scope: str) -> threading.Lock:
+    key = (str(Path(store.path).expanduser().resolve()), scope)
+    with _sync_locks_guard:
+        return _sync_locks.setdefault(key, threading.Lock())
+
+
+# Indirection so tests can drive the sync time budget without sleeping.
+_ingest_clock = time.monotonic
+
+
+@dataclass
+class _SyncProgress:
+    """Work committed so far, kept outside the walk so failures can report it."""
+
+    pages: int = 0
+    events: int = 0
+    cursor_reset: bool = False
+
+
+def sync_flag_events(store, settings: Settings | None = None) -> IngestionSyncResult:
+    """Advance ingestion for the configured scope by a bounded amount of work.
+
+    Soroban RPC's getEvents scans a bounded ledger range per call and returns a
+    continuation cursor even when that range holds no matching events, so this
+    pages forward, persisting the cursor after every page, until RPC reports
+    no further cursor, the cursor stops advancing, a short non-empty page is
+    read, or the page or time budget (``EVENT_INGEST_MAX_PAGES``,
+    ``EVENT_INGEST_SYNC_BUDGET_SECONDS``) is spent. Full pages keep the walk
+    going so a backlog drains without waiting a poll interval per page.
+
+    Only one sync per store and scope runs at a time in a process; a caller
+    that finds one already running returns immediately. Across processes,
+    every cursor write is a compare-and-set, so a slower worker never moves
+    the cursor backwards.
+
+    RPC transport and HTTP failures propagate after the pages already saved
+    are committed. A cursor the provider rejects is handled according to
+    ``EVENT_INGEST_CURSOR_RECOVERY``. Every outcome, including failures, is
+    recorded in ``app.metrics.ingestion_metrics`` and logged with fixed labels.
     """
     settings = settings or get_settings()
-    scope = f"{settings.network_passphrase}:{settings.contract_id}"
+    scope = ingestion_scope(settings)
+    lock = _scope_lock(store, scope)
+    if not lock.acquire(blocking=False):
+        ingestion_metrics.record_sync("sync_in_progress", 0, 0, 0.0)
+        event_logger.debug(
+            "event_ingestion_sync stop_reason=sync_in_progress pages=0 events=0",
+            extra={"event": "ingestion_sync", "stop_reason": "sync_in_progress",
+                   "pages": 0, "events_read": 0},
+        )
+        return IngestionSyncResult(scope, "sync_in_progress")
+
+    progress = _SyncProgress()
+    started = time.perf_counter()
+    try:
+        result = _sync_scope(store, settings, scope, progress)
+    except Exception as exc:
+        _record_failed_sync(exc, progress, _elapsed_ms(started))
+        raise
+    finally:
+        lock.release()
+
+    duration_ms = _elapsed_ms(started)
+    ingestion_metrics.record_sync(result.stop_reason, result.pages, result.events,
+                                  duration_ms, result.cursor_reset)
+    noteworthy = result.events or result.cursor_reset or result.stop_reason in {
+        "page_budget_exhausted", "time_budget_exhausted", "cursor_conflict"}
+    event_logger.log(
+        logging.INFO if noteworthy else logging.DEBUG,
+        "event_ingestion_sync stop_reason=%s pages=%s events=%s duration_ms=%s",
+        result.stop_reason, result.pages, result.events, duration_ms,
+        extra={"event": "ingestion_sync", "stop_reason": result.stop_reason,
+               "pages": result.pages, "events_read": result.events,
+               "duration_ms": duration_ms, "cursor_reset": result.cursor_reset},
+    )
+    return result
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 2)
+
+
+def _record_failed_sync(exc: BaseException, progress: _SyncProgress, duration_ms: float) -> None:
+    failure = classify_ingestion_failure(exc)
+    ingestion_metrics.record_failure(failure, progress.pages, progress.events,
+                                     duration_ms, progress.cursor_reset)
+    status = exc.status_code if isinstance(exc, HTTPException) else None
+    extra = {"event": "ingestion_sync_failed", "failure": failure, "status_code": status,
+             "pages": progress.pages, "events_read": progress.events,
+             "duration_ms": duration_ms, "cursor_reset": progress.cursor_reset}
+    # The exception type name is fixed by our code, unlike its message, which
+    # can carry provider text or a cursor. Only unexpected errors need it.
+    if failure == "internal_error":
+        extra["error_type"] = type(exc).__name__
+    event_logger.warning(
+        "event_ingestion_sync_failed failure=%s status_code=%s pages=%s events=%s duration_ms=%s",
+        failure, status, progress.pages, progress.events, duration_ms,
+        extra=extra,
+    )
+
+
+def _sync_scope(store, settings: Settings, scope: str, progress: _SyncProgress) -> IngestionSyncResult:
     cursor = store.ingestion_cursor(scope)
-    for _ in range(_MAX_CATCHUP_PAGES):
-        events, next_cursor = fetch_flag_event_page(limit=100, cursor=cursor, settings=settings)
-        store.save_page(events, next_cursor, scope)
-        if events or next_cursor is None or next_cursor == cursor:
-            return
+    seen = {cursor} if cursor else set()
+    page_size = settings.event_ingest_page_size
+    deadline = _ingest_clock() + settings.event_ingest_sync_budget_seconds
+
+    def finish(stop_reason: str) -> IngestionSyncResult:
+        return IngestionSyncResult(scope, stop_reason, progress.pages, progress.events,
+                                   cursor, progress.cursor_reset)
+
+    for attempt in range(settings.event_ingest_max_pages):
+        # Always try one page so a tiny budget cannot freeze ingestion; after
+        # that, yield and let the next sync resume from the saved cursor.
+        if attempt and _ingest_clock() >= deadline:
+            return finish("time_budget_exhausted")
+        try:
+            events, raw_next = fetch_flag_event_page(limit=page_size, cursor=cursor, settings=settings)
+        except SorobanRpcError as exc:
+            if cursor is None or exc.code not in _CURSOR_REJECTED_CODES:
+                raise
+            recovery = settings.event_ingest_cursor_recovery
+            event_logger.warning(
+                "event_ingestion_cursor_rejected rpc_error_code=%s recovery=%s",
+                exc.code, recovery,
+                extra={"event": "ingestion_cursor_rejected", "rpc_error_code": exc.code,
+                       "recovery": recovery},
+            )
+            # Reset at most once per run: if a fresh start is rejected too,
+            # the problem is not the cursor and should surface as a failure.
+            if recovery != "reset" or progress.cursor_reset:
+                raise IngestionCursorRejectedError(exc.code) from exc
+            if not store.reset_ingestion_cursor(scope, cursor):
+                return finish("cursor_conflict")
+            cursor, seen, progress.cursor_reset = None, set(), True
+            continue
+
+        next_cursor = _checked_next_cursor(raw_next, cursor, seen)
+        try:
+            store.save_page(events, next_cursor, scope, expected_cursor=cursor)
+        except CursorConflictError:
+            return finish("cursor_conflict")
+        except ValueError as exc:
+            # A page with an unusable event is rejected whole and the cursor
+            # stays put; report it like any other malformed upstream payload.
+            raise UpstreamDataError("malformed_page", "Soroban RPC returned a malformed event") from exc
+        progress.pages += 1
+        progress.events += len(events)
+
+        if next_cursor is None:
+            return finish("caught_up")
+        if next_cursor == cursor:
+            return finish("cursor_stalled")
+        seen.add(next_cursor)
         cursor = next_cursor
+        if events and len(events) < page_size:
+            return finish("partial_page")
+    return finish("page_budget_exhausted")
