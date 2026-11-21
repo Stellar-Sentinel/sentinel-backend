@@ -157,3 +157,72 @@ class NetworkStatusResponse(BaseModel):
     oldest_ledger: int | None = None
     ledger_retention_window: int | None = None
     observed_at: str
+
+
+class IngestionCursorResponse(BaseModel):
+    present: bool
+    ledger: int | None = Field(default=None, description="Ledger encoded in a standard Soroban cursor; null for opaque cursors.")
+
+
+class IngestionLastSyncResponse(BaseModel):
+    result: Literal["ok", "failed"]
+    stop_reason: str | None = None
+    failure: str | None = None
+    pages: int
+    events: int
+    duration_ms: float
+    at: str
+
+
+class IngestionFailureResponse(BaseModel):
+    failure: str
+    at: str
+
+
+class IngestionTotalsResponse(BaseModel):
+    syncs: dict[str, int]
+    failures: dict[str, int]
+    pages: int
+    events: int
+    cursor_resets: int
+
+
+class IngestionLimitsResponse(BaseModel):
+    page_size: int
+    max_pages: int
+    sync_budget_seconds: float
+    interval_seconds: int
+    max_backoff_seconds: int
+    cursor_recovery: Literal["halt", "reset"]
+
+
+class IngestionStatusResponse(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "enabled": True,
+        "state": "failing",
+        "store": "ok",
+        "cursor": {"present": True, "ledger": 123456},
+        "consecutive_failures": 2,
+        "last_sync": {"result": "failed", "stop_reason": None, "failure": "rpc_timeout",
+                      "pages": 1, "events": 0, "duration_ms": 8012.4, "at": "2026-01-01T12:05:00+00:00"},
+        "last_success_at": "2026-01-01T12:00:00+00:00",
+        "last_failure": {"failure": "rpc_timeout", "at": "2026-01-01T12:05:00+00:00"},
+        "totals": {
+            "syncs": {"caught_up": 10, "partial_page": 2, "page_budget_exhausted": 1},
+            "failures": {"rpc_timeout": 2},
+            "pages": 40, "events": 112, "cursor_resets": 0,
+        },
+        "limits": {"page_size": 100, "max_pages": 25, "sync_budget_seconds": 60.0,
+                   "interval_seconds": 30, "max_backoff_seconds": 300, "cursor_recovery": "halt"},
+    }]})
+
+    enabled: bool
+    state: Literal["disabled", "unknown", "ok", "failing"]
+    store: Literal["ok", "unavailable"] | None = None
+    cursor: IngestionCursorResponse | None = None
+    consecutive_failures: int
+    last_sync: IngestionLastSyncResponse | None = None
+    last_success_at: str | None = None
+    last_failure: IngestionFailureResponse | None = None
+    totals: IngestionTotalsResponse
+    limits: IngestionLimitsResponse

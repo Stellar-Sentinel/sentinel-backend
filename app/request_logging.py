@@ -2,10 +2,15 @@
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 from app.metrics import service_metrics
 
 logger = logging.getLogger("sentinel.request")
+
+
+def _status_class(status_code):
+    return f"{status_code // 100}xx" if 100 <= status_code <= 599 else "unknown"
 
 
 class RequestLoggingMiddleware:
@@ -31,12 +36,17 @@ class RequestLoggingMiddleware:
         finally:
             route = scope.get("route")
             route_template = getattr(route, "path", None) or "<unmatched>"
+            status_class = _status_class(status_code)
             record = {
-                "event": "http.request",
-                "schema_version": 1,
+                "schema_version": "1",
+                "event": "http.request.completed",
+                "severity": "INFO" if status_code < 400 else "WARNING",
+                "occurred_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "method": scope.get("method", ""),
                 "route": route_template,
                 "status": status_code,
+                "status_class": status_class,
+                "outcome": "success" if status_code < 400 else "failure",
                 "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 "request_id": scope.get("sentinel.request_id"),
             }
