@@ -1,5 +1,6 @@
 from functools import lru_cache
 from ipaddress import ip_network
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
@@ -51,8 +52,37 @@ class Settings(BaseSettings):
     def trusted_proxy_networks(self):
         return [ip_network(item.strip(), strict=False)
                 for item in self.trusted_proxy_cidrs.split(",") if item.strip()]
+
+    def safe_summary(self) -> dict[str, object]:
+        """Return deployment diagnostics without secrets or credentialed URLs."""
+        return {
+            "environment": self.environment,
+            "network_passphrase": self.network_passphrase,
+            "contract_configured": bool(self.contract_id),
+            "api_key_configured": bool(self.api_key),
+            "agent_enabled": self.agent_enabled,
+            "agent_key_configured": bool(self.agent_secret_key),
+            "trusted_proxy_count": len(self.trusted_proxy_networks),
+        }
     event_store_path: str = "./data/events.sqlite3"
+    # Startup refuses an event store migrated by a newer release. Migrations
+    # are additive, so enabling this lets an older release keep reading and
+    # writing that file during a deliberate code rollback.
+    event_store_allow_newer_schema: bool = False
     event_ingest_interval_seconds: int = Field(default=30, gt=0, le=86_400)
+    # Catch-up bounds: one sync reads at most max_pages * page_size events.
+    event_ingest_page_size: int = Field(default=100, ge=1, le=1_000)
+    event_ingest_max_pages: int = Field(default=25, ge=1, le=100)
+    # Wall-clock budget for one sync, checked between pages. The first page is
+    # always attempted, so a single slow call can overrun it by one page.
+    event_ingest_sync_budget_seconds: float = Field(default=60.0, gt=0, le=3_600)
+    # Background polling backs off exponentially after consecutive failures,
+    # never sleeping less than the interval nor more than this cap.
+    event_ingest_max_backoff_seconds: int = Field(default=300, gt=0, le=86_400)
+    # What to do when Soroban RPC rejects the persisted cursor (for example
+    # after it ages out of provider retention): "halt" keeps it and reports
+    # stale ingestion; "reset" drops it and restarts from the lookback window.
+    event_ingest_cursor_recovery: Literal["halt", "reset"] = "halt"
     agent_enabled: bool = False
     agent_secret_key: str = ""
     agent_poll_interval_seconds: int = Field(default=300, ge=30, le=86_400)
