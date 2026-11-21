@@ -104,6 +104,15 @@ class MonitoringAgent:
         self.server = SorobanServer(settings.soroban_rpc_url)
         self._last_flagged_at: dict[str, float] = {}
 
+    @property
+    def authorization_context(self) -> dict[str, str]:
+        """Return safe-to-log identity context without exposing the secret key."""
+        return {
+            "agent_address": self.keypair.public_key,
+            "contract_id": self.settings.contract_id,
+            "network_passphrase": self.settings.network_passphrase,
+        }
+
     def _on_cooldown(self, address: str) -> bool:
         last = self._last_flagged_at.get(address)
         return last is not None and (time.monotonic() - last) < self.settings.agent_flag_cooldown_seconds
