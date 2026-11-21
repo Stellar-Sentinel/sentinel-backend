@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # Catch-up bounds: one sync reads at most max_pages * page_size events.
     event_ingest_page_size: int = Field(default=100, ge=1, le=1_000)
     event_ingest_max_pages: int = Field(default=25, ge=1, le=100)
+    # Wall-clock budget for one sync, checked between pages. The first page is
+    # always attempted, so a single slow call can overrun it by one page.
+    event_ingest_sync_budget_seconds: float = Field(default=60.0, gt=0, le=3_600)
     # Background polling backs off exponentially after consecutive failures,
     # never sleeping less than the interval nor more than this cap.
     event_ingest_max_backoff_seconds: int = Field(default=300, gt=0, le=86_400)

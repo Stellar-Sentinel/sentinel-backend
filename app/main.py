@@ -10,6 +10,7 @@ from app.middleware.api_key import ApiKeyMiddleware
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.stellar import (
+    classify_ingestion_failure,
     close_http_client,
     ingestion_retry_delay,
     network_status,
@@ -38,10 +39,15 @@ async def _ingest_events_forever():
             consecutive_failures = 0
         except Exception as exc:
             consecutive_failures += 1
+            # sync_flag_events already logged the failure detail; this line
+            # records the backoff decision with the same fixed label.
+            failure = classify_ingestion_failure(exc)
+            delay = ingestion_retry_delay(consecutive_failures, settings)
             logger.warning(
-                "Soroban event ingestion failed (%s); consecutive failures: %s, next attempt in %ss",
-                type(exc).__name__, consecutive_failures,
-                ingestion_retry_delay(consecutive_failures, settings),
+                "event_ingestion_backoff failure=%s consecutive_failures=%s next_attempt_seconds=%s",
+                failure, consecutive_failures, delay,
+                extra={"event": "ingestion_backoff", "failure": failure,
+                       "consecutive_failures": consecutive_failures, "next_attempt_seconds": delay},
             )
         await asyncio.sleep(ingestion_retry_delay(consecutive_failures, settings))
 
