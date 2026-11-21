@@ -10,7 +10,7 @@ def test_retry_log_uses_operation_host_and_bounded_fields(monkeypatch, caplog):
             httpx.Response(
                 503,
                 request=httpx.Request(
-                    "GET", "https://horizon.example/resource?token=must-not-log"
+                    "GET", "https://horizon.example/resource?q=do-not-log-this-value"
                 ),
             ),
             httpx.Response(
@@ -25,7 +25,7 @@ def test_retry_log_uses_operation_host_and_bounded_fields(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger=stellar.logger.name):
         result = stellar._request_with_retries(
             lambda *_args, **_kwargs: next(responses),
-            "https://horizon.example/resource?token=must-not-log",
+            "https://horizon.example/resource?q=do-not-log-this-value",
             Settings(upstream_max_retries=1),
             operation="horizon_get",
         )
@@ -38,7 +38,7 @@ def test_retry_log_uses_operation_host_and_bounded_fields(monkeypatch, caplog):
     assert record.attempt == 1
     assert record.max_retries == 1
     assert record.reason == "http_503"
-    assert "token=must-not-log" not in caplog.text
+    assert "do-not-log-this-value" not in caplog.text
 
 
 def test_exhaustion_log_reports_attempt_count_without_exception_details(monkeypatch, caplog):
@@ -51,7 +51,7 @@ def test_exhaustion_log_reports_attempt_count_without_exception_details(monkeypa
         try:
             stellar._request_with_retries(
                 fail,
-                "https://rpc.example/health?secret=must-not-log",
+                "https://rpc.example/health?q=do-not-log-this-value",
                 Settings(upstream_max_retries=1),
                 operation="soroban_rpc_post",
             )
@@ -62,4 +62,4 @@ def test_exhaustion_log_reports_attempt_count_without_exception_details(monkeypa
     assert caplog.records[-1].getMessage().startswith("upstream_retry_exhausted")
     assert caplog.records[-1].attempts == 2
     assert "secret endpoint details" not in caplog.text
-    assert "secret=must-not-log" not in caplog.text
+    assert "do-not-log-this-value" not in caplog.text
