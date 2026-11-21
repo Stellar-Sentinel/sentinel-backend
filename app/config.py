@@ -1,5 +1,6 @@
 from functools import lru_cache
 from ipaddress import ip_network
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +38,26 @@ class Settings(BaseSettings):
     screening_rate_limit_window_seconds: int = Field(default=60, gt=0, le=86_400)
     trusted_proxy_cidrs: str = ""
 
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_cors_origins(cls, value: str) -> str:
+        origins = [origin.strip() for origin in value.split(",") if origin.strip()]
+        for origin in origins:
+            parsed = urlsplit(origin)
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                    or parsed.path or parsed.query or parsed.fragment
+                    or parsed.username or parsed.password):
+                raise ValueError(
+                    "CORS_ORIGINS must contain exact HTTP(S) origins without paths"
+                )
+            if "*" in parsed.netloc or "@" in parsed.netloc:
+                raise ValueError("CORS_ORIGINS must not contain wildcard origins")
+            try:
+                parsed.port
+            except ValueError as exc:
+                raise ValueError("CORS_ORIGINS contains an invalid port") from exc
+        return ",".join(origins)
+
     @field_validator("trusted_proxy_cidrs")
     @classmethod
     def validate_trusted_proxy_cidrs(cls, value: str) -> str:
@@ -50,6 +71,10 @@ class Settings(BaseSettings):
     def trusted_proxy_networks(self):
         return [ip_network(item.strip(), strict=False)
                 for item in self.trusted_proxy_cidrs.split(",") if item.strip()]
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     def safe_summary(self) -> dict[str, object]:
         """Return deployment diagnostics without secrets or credentialed URLs."""

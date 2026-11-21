@@ -102,3 +102,19 @@ def test_malformed_forwarded_chain_falls_back_to_trusted_peer():
     }
 
     assert middleware._client_ip(scope) == "10.0.0.2"
+
+
+def test_forwarded_chain_has_a_bounded_hop_count():
+    middleware = ScreeningRateLimitMiddleware(
+        app=None,
+        requests=5,
+        window_seconds=60,
+        trusted_proxies=[ip_network("10.0.0.0/8")],
+    )
+    forwarded = ", ".join(["203.0.113.8"] * 17)
+    scope = {
+        "client": ("10.0.0.2", 1234),
+        "headers": [(b"x-forwarded-for", forwarded.encode("ascii"))],
+    }
+
+    assert middleware._client_ip(scope) == "10.0.0.2"
