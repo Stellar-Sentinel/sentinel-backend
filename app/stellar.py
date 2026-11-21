@@ -525,7 +525,7 @@ def list_account_operations(address: str, limit: int, cursor: str | None = None,
     if len(records) == limit and records[-1].get("id") is not None:
         next_cursor = base64.urlsafe_b64encode(str(records[-1]["id"]).encode("ascii")).decode("ascii").rstrip("=")
     return {
-        "operations": [_normalize_operation(record) for record in records],
+        "operations": [_normalize_operation(record) for record in records if isinstance(record, dict)],
         "next_cursor": next_cursor,
         "limit": limit,
         "source": {"horizon_url": _public_endpoint(settings.horizon_url.rstrip("/")), "network": settings.network_passphrase},
