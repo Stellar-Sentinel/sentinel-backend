@@ -185,6 +185,12 @@ def _get(url: str, params: dict | None = None, settings: Settings | None = None)
 
 
 def _asset_context(account: dict) -> tuple[list[dict], int, float]:
+    """Return displayable balances and count only issued-asset trustlines.
+
+    Horizon also exposes liquidity-pool shares in ``balances``. They are
+    account assets, but they are not trustlines, so they must not inflate the
+    trustline metric used by operators.
+    """
     assets = []
     trustline_count = 0
     native_balance = 0.0
@@ -221,7 +227,8 @@ def _asset_context(account: dict) -> tuple[list[dict], int, float]:
                 continue
             if balance.get("liquidity_pool_id") is not None:
                 asset["liquidity_pool_id"] = balance["liquidity_pool_id"]
-            trustline_count += 1
+            if asset_type.startswith("credit_"):
+                trustline_count += 1
         assets.append({"asset": asset, "balance": str(amount)})
 
     return assets, trustline_count, native_balance
