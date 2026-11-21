@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.config import Settings
+from app.middleware import rate_limit as rate_limit_module
 from app.middleware.rate_limit import ScreeningRateLimitMiddleware
 
 
@@ -48,6 +49,35 @@ def test_non_screening_routes_are_not_rate_limited():
     client.post("/risk/score")
 
     assert client.get("/health").status_code == 200
+
+
+def test_rate_limit_window_expires_without_leaking_old_hits(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(rate_limit_module, "monotonic", lambda: clock[0])
+    client = _client(limit=1)
+
+    assert client.post("/risk/score").status_code == 200
+    assert client.post("/risk/score").status_code == 429
+
+    clock[0] = 161.0
+    reset = client.post("/risk/score")
+    assert reset.status_code == 200
+    assert reset.headers["x-ratelimit-remaining"] == "0"
+
+
+def test_malformed_forwarded_chain_falls_back_to_trusted_peer():
+    middleware = ScreeningRateLimitMiddleware(
+        app=None,
+        requests=5,
+        window_seconds=60,
+        trusted_proxies=[ip_network("10.0.0.0/8")],
+    )
+    scope = {
+        "client": ("10.0.0.2", 1234),
+        "headers": [(b"x-forwarded-for", b"203.0.113.8, not-an-ip")],
+    }
+
+    assert middleware._client_ip(scope) == "10.0.0.2"
 
 
 def test_rate_limit_settings_validate_limits_and_proxy_cidrs():
