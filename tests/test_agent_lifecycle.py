@@ -43,3 +43,10 @@ def test_submission_failure_isolated_per_candidate(monkeypatch):
     assert agent.run_once() == 1
     assert filed == [second]
     assert not agent._on_cooldown(first)
+    assert agent.metrics_snapshot() == {
+        "candidates_seen": 2,
+        "candidates_scored": 2,
+        "flags_submitted": 1,
+        "skipped": {"self": 0, "cooldown": 0, "below_threshold": 0},
+        "failures": {"scoring": 0, "submission": 1},
+    }
