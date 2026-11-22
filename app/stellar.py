@@ -205,6 +205,8 @@ def _asset_context(account: dict) -> tuple[list[dict], int, float]:
         amount = balance.get("balance")
         if not isinstance(asset_type, str) or amount is None:
             continue
+        if asset_type not in {"native", "credit_alphanum4", "credit_alphanum12", "liquidity_pool_shares"}:
+            continue
         try:
             numeric_amount = float(amount)
         except (TypeError, ValueError):
