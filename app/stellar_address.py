@@ -26,6 +26,9 @@ def is_valid_account_id(value: str) -> bool:
         expected_length, expected_version = 43, _MUXED_ACCOUNT_VERSION
     else:
         return False
+    expected_text_length = 56 if value.startswith("G") else 69
+    if len(value) != expected_text_length:
+        return False
 
     try:
         padding = "=" * (-len(value) % 8)

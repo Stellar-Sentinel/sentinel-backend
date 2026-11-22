@@ -176,6 +176,8 @@ class MonitoringAgent:
                 continue
             try:
                 self._file_flag(address, result)
+                # A cooldown represents a confirmed submission, not merely an
+                # eligible score. Failed attempts must remain retryable.
                 self._last_flagged_at[address] = time.monotonic()
                 filed += 1
                 metrics["flags_submitted"] += 1
