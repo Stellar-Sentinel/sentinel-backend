@@ -36,6 +36,23 @@ def test_report_digest_is_32_bytes_and_field_scoped():
     assert monitor.report_digest(with_extra_field) == digest
 
 
+def test_report_digest_is_stable_for_input_order_and_changes_for_each_bound_field():
+    base = _result(CANDIDATE_A, threshold_exceeded=True)
+    reordered = {key: base[key] for key in reversed(list(base))}
+    assert monitor.report_digest(reordered) == monitor.report_digest(base)
+
+    for field, value in {
+        "address": CANDIDATE_B,
+        "score": 86,
+        "risk_level": "elevated",
+        "threshold": 71,
+        "scoring_policy_version": "1.0.1",
+        "as_of": "2026-01-01T00:00:01+00:00",
+    }.items():
+        changed = dict(base, **{field: value})
+        assert monitor.report_digest(changed) != monitor.report_digest(base), field
+
+
 def test_report_digest_normalizes_values_and_versions_schema():
     result = _result(CANDIDATE_A, threshold_exceeded=True)
     result.update(
