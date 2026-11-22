@@ -345,6 +345,8 @@ class EventStore:
                 stored = self._read_cursor(connection, scope)
                 if stored != expected_cursor:
                     raise CursorConflictError("ingestion cursor for scope changed concurrently")
+            inserted = 0
+            duplicates = 0
             for event in events:
                 event_id = event.get("id")
                 ledger = event.get("ledger")
@@ -354,7 +356,7 @@ class EventStore:
                     ledger = int(ledger)
                 except (TypeError, ValueError):
                     raise ValueError("Soroban flag event has an invalid ledger") from None
-                connection.execute(
+                result = connection.execute(
                     """INSERT OR IGNORE INTO flag_events
                     (scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash, report_digest)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -371,15 +373,26 @@ class EventStore:
                         event.get("report_digest"),
                     ),
                 )
-            # Persist the terminal state as well as continuation cursors. A
-            # NULL cursor means the retained range is caught up; leaving the
-            # previous cursor in place would replay the final page forever.
+                if result.rowcount == 1:
+                    inserted += 1
+                else:
+                    duplicates += 1
+            # Persist terminal state as well as continuation cursors. A NULL cursor means
+            # the retained range is caught up; leaving the previous cursor would replay
+            # the final page forever.
             connection.execute(
                 """INSERT INTO ingestion_state(scope, cursor) VALUES (?, ?)
                 ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor""",
                 (scope, next_cursor),
             )
             connection.commit()
+            logger.info(
+                "Persisted event page (scope=%s inserted=%d duplicates=%d cursor_present=%s)",
+                scope,
+                inserted,
+                duplicates,
+                next_cursor is not None,
+            )
 
     def page(self, limit: int, scope: str, cursor: str | None = None) -> dict:
         after = self._decode_cursor(cursor) if cursor else None
