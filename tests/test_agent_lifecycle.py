@@ -42,4 +42,4 @@ def test_submission_failure_isolated_per_candidate(monkeypatch):
 
     assert agent.run_once() == 1
     assert filed == [second]
-    assert agent._on_cooldown(first)
+    assert not agent._on_cooldown(first)

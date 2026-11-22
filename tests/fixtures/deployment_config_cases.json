@@ -1,0 +1,48 @@
+[
+  {
+    "name": "development local defaults",
+    "values": {
+      "environment": "development",
+      "contract_id": ""
+    },
+    "valid": true
+  },
+  {
+    "name": "production public deployment",
+    "values": {
+      "environment": "production",
+      "api_key": "x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x",
+      "cors_origins": "https://dashboard.example"
+    },
+    "valid": true
+  },
+  {
+    "name": "production short api key",
+    "values": {
+      "environment": "production",
+      "api_key": "too-short",
+      "cors_origins": "https://dashboard.example"
+    },
+    "valid": false,
+    "error": "API key"
+  },
+  {
+    "name": "production local cors",
+    "values": {
+      "environment": "production",
+      "api_key": "x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x",
+      "cors_origins": "http://localhost:3000"
+    },
+    "valid": false,
+    "error": "CORS"
+  },
+  {
+    "name": "inverted risk bands",
+    "values": {
+      "risk_high_score_threshold": 40,
+      "risk_elevated_score_threshold": 40
+    },
+    "valid": false,
+    "error": "RISK_HIGH_SCORE_THRESHOLD"
+  }
+]

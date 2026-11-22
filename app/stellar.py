@@ -23,6 +23,7 @@ from app.metrics import ingestion_metrics
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 HORIZON_OPERATION_PAGE_SIZE = 200
+logger = logging.getLogger(__name__)
 event_logger = logging.getLogger("sentinel.events")
 _screening_cache = OrderedDict()
 _screening_cache_lock = threading.Lock()
@@ -82,21 +83,86 @@ def _retry_after_seconds(response: httpx.Response, settings: Settings, attempt: 
     return min(delay, settings.upstream_retry_after_cap_seconds)
 
 
-def _request_with_retries(method, url: str, settings: Settings, **kwargs) -> httpx.Response:
+def _retry_upstream(url: str) -> str:
+    """Return only the upstream host for safe, bounded retry diagnostics."""
+    try:
+        return urlsplit(url).netloc or "unknown"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def _log_retry(operation: str, url: str, attempt: int, retries: int, delay: float, reason: str) -> None:
+    logger.warning(
+        "upstream_retry_scheduled operation=%s upstream=%s attempt=%d max_retries=%d delay_seconds=%.3f reason=%s",
+        operation,
+        _retry_upstream(url),
+        attempt + 1,
+        retries,
+        delay,
+        reason,
+        extra={
+            "operation": operation,
+            "upstream": _retry_upstream(url),
+            "attempt": attempt + 1,
+            "max_retries": retries,
+            "delay_seconds": delay,
+            "reason": reason,
+        },
+    )
+
+
+def _request_with_retries(
+    method,
+    url: str,
+    settings: Settings,
+    *,
+    operation: str = "upstream_request",
+    **kwargs,
+) -> httpx.Response:
     retries = settings.upstream_max_retries
     for attempt in range(retries + 1):
         try:
             response = method(url, **kwargs)
         except httpx.TransportError:
             if attempt >= retries:
+                logger.warning(
+                    "upstream_retry_exhausted operation=%s upstream=%s attempts=%d reason=transport",
+                    operation,
+                    _retry_upstream(url),
+                    attempt + 1,
+                    extra={
+                        "operation": operation,
+                        "upstream": _retry_upstream(url),
+                        "attempts": attempt + 1,
+                        "reason": "transport",
+                    },
+                )
                 raise
             delay = settings.upstream_retry_backoff_seconds * (2 ** attempt)
-            time.sleep(min(delay, settings.upstream_retry_after_cap_seconds))
+            delay = min(delay, settings.upstream_retry_after_cap_seconds)
+            _log_retry(operation, url, attempt, retries, delay, "transport")
+            time.sleep(delay)
             continue
 
         if response.status_code in _RETRYABLE_STATUS_CODES and attempt < retries:
-            time.sleep(_retry_after_seconds(response, settings, attempt))
+            delay = _retry_after_seconds(response, settings, attempt)
+            _log_retry(operation, url, attempt, retries, delay, f"http_{response.status_code}")
+            time.sleep(delay)
             continue
+        if response.status_code in _RETRYABLE_STATUS_CODES:
+            logger.warning(
+                "upstream_retry_exhausted operation=%s upstream=%s attempts=%d reason=http_%d",
+                operation,
+                _retry_upstream(url),
+                attempt + 1,
+                response.status_code,
+                extra={
+                    "operation": operation,
+                    "upstream": _retry_upstream(url),
+                    "attempts": attempt + 1,
+                    "reason": f"http_{response.status_code}",
+                },
+            )
         return response
 
     raise RuntimeError("upstream retry loop ended unexpectedly")
@@ -137,7 +203,7 @@ def _finite_float(value) -> float:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
         return 0.0
-    return parsed if math.isfinite(parsed) else 0.0
+    return parsed if math.isfinite(parsed) and parsed >= 0 else 0.0
 
 
 def _public_endpoint(url: str) -> str:
@@ -166,6 +232,7 @@ def _get(url: str, params: dict | None = None, settings: Settings | None = None)
             lambda target, **kwargs: _get_response(target, kwargs.get("params"), settings),
             url,
             settings,
+            operation="horizon_get",
             params=params,
             timeout=settings.request_timeout_seconds,
         )
@@ -271,6 +338,7 @@ def _rpc(method: str, params: dict, settings: Settings | None = None) -> dict:
             lambda target, **kwargs: _post_response(target, kwargs.get("json"), settings),
             settings.soroban_rpc_url,
             settings,
+            operation="soroban_rpc_post",
             json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
             timeout=settings.request_timeout_seconds,
         )
