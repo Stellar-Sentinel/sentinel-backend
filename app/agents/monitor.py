@@ -139,9 +139,11 @@ class MonitoringAgent:
                 continue
             if not result.get("threshold_exceeded"):
                 continue
-            self._last_flagged_at[address] = time.monotonic()
             try:
                 self._file_flag(address, result)
+                # A cooldown represents a confirmed submission, not merely an
+                # eligible score. Failed attempts must remain retryable.
+                self._last_flagged_at[address] = time.monotonic()
                 filed += 1
             except Exception as exc:
                 logger.warning("Agent flag submission failed (%s)", type(exc).__name__)
