@@ -72,7 +72,7 @@ class ScreeningRateLimitMiddleware:
         peer = scope.get("client")
         try:
             remote = ip_address(peer[0]) if peer else None
-        except (TypeError, ValueError):
+        except (IndexError, TypeError, ValueError):
             remote = None
 
         if remote is None or not self._is_trusted(remote):
