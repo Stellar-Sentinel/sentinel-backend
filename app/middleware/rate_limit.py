@@ -6,6 +6,9 @@ from threading import Lock
 from time import monotonic
 
 
+_MAX_FORWARDED_HOPS = 16
+
+
 class ScreeningRateLimitMiddleware:
     """Limit POST /risk/score without trusting unconfigured proxy headers."""
 
@@ -69,7 +72,7 @@ class ScreeningRateLimitMiddleware:
         peer = scope.get("client")
         try:
             remote = ip_address(peer[0]) if peer else None
-        except ValueError:
+        except (IndexError, TypeError, ValueError):
             remote = None
 
         if remote is None or not self._is_trusted(remote):
@@ -77,6 +80,8 @@ class ScreeningRateLimitMiddleware:
 
         headers = dict(scope.get("headers", []))
         forwarded = headers.get(b"x-forwarded-for", b"").decode("ascii", errors="ignore")
+        if forwarded.count(",") + 1 > _MAX_FORWARDED_HOPS:
+            return str(remote)
         chain = []
         for item in forwarded.split(","):
             try:
