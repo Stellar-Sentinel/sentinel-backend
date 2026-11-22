@@ -137,7 +137,7 @@ def _finite_float(value) -> float:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
         return 0.0
-    return parsed if math.isfinite(parsed) else 0.0
+    return parsed if math.isfinite(parsed) and parsed >= 0 else 0.0
 
 
 def _public_endpoint(url: str) -> str:
