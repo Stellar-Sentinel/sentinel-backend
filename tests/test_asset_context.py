@@ -114,6 +114,17 @@ def test_score_handles_empty_and_malformed_asset_records(monkeypatch):
     assert missing["metrics"]["native_xlm_balance"] == 0
 
 
+def test_score_skips_unknown_asset_types(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda url, **kwargs: {
+        "sequence": "1",
+        "balances": [{"asset_type": "future_asset", "balance": "10"}],
+    } if url.endswith(ADDRESS) else {"_embedded": {"records": []}})
+
+    response = client.post("/risk/score", json={"address": ADDRESS})
+
+    assert response.status_code == 200
+    assert response.json()["assets"] == []
+
 def test_liquidity_pool_assets_do_not_count_as_trustlines(monkeypatch):
     account = {
         "sequence": "1",

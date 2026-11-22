@@ -90,6 +90,46 @@ def test_account_operations_normalize_native_payment_and_short_page(monkeypatch)
     assert response.json()["next_cursor"] is None
 
 
+def test_account_operations_keep_unknown_and_partial_records_bounded(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {
+        "_embedded": {"records": [
+            {"id": "unknown-1", "type": "future_operation", "source_account": ADDRESS},
+            {
+                "id": "path-2",
+                "type": "path_payment_strict_receive",
+                "source_amount": None,
+                "amount": None,
+            },
+        ]}
+    })
+
+    response = client.get(f"/accounts/{ADDRESS}/operations?limit=20")
+
+    assert response.status_code == 200
+    assert response.json()["operations"] == [
+        {
+            "id": "unknown-1",
+            "type": "future_operation",
+            "created_at": None,
+            "transaction_hash": None,
+            "source_account": ADDRESS,
+            "from_account": None,
+            "to_account": None,
+            "amounts": [],
+        },
+        {
+            "id": "path-2",
+            "type": "path_payment_strict_receive",
+            "created_at": None,
+            "transaction_hash": None,
+            "source_account": None,
+            "from_account": None,
+            "to_account": None,
+            "amounts": [],
+        },
+    ]
+
+
 def test_account_operations_use_starting_balance_for_create_account(monkeypatch):
     monkeypatch.setattr(stellar, "_get", lambda *args, **kwargs: {
         "_embedded": {"records": [{
