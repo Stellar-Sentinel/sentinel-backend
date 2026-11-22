@@ -33,6 +33,8 @@ def test_health_and_cors():
     assert client.get("/live").json() == {"status": "ok"}
     response = client.options("/risk/score", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"})
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    rejected = client.options("/risk/score", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
+    assert "access-control-allow-origin" not in rejected.headers
 
 
 def test_public_response_models_are_documented_with_examples():
