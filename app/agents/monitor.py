@@ -173,9 +173,11 @@ class MonitoringAgent:
             if not result.get("threshold_exceeded"):
                 self.skip_counts["below_threshold"] += 1
                 continue
-            self._record_cooldown(address)
             try:
                 self._file_flag(address, result)
+                # A cooldown represents a confirmed submission, not merely an
+                # eligible score. Failed attempts must remain retryable.
+                self._record_cooldown(address)
                 filed += 1
             except Exception as exc:
                 self.skip_counts["submission_failure"] += 1
