@@ -1,4 +1,5 @@
 import logging
+import pytest
 
 from app.agents import monitor
 from app.config import Settings
@@ -46,6 +47,23 @@ def test_report_digest_rejects_incomplete_canonical_report():
         assert "as_of" in str(error)
 
 
+def test_report_digest_is_stable_for_input_order_and_changes_for_each_bound_field():
+    base = _result(CANDIDATE_A, threshold_exceeded=True)
+    reordered = {key: base[key] for key in reversed(list(base))}
+    assert monitor.report_digest(reordered) == monitor.report_digest(base)
+
+    for field, value in {
+        "address": CANDIDATE_B,
+        "score": 86,
+        "risk_level": "elevated",
+        "threshold": 71,
+        "scoring_policy_version": "1.0.1",
+        "as_of": "2026-01-01T00:00:01+00:00",
+    }.items():
+        changed = dict(base, **{field: value})
+        assert monitor.report_digest(changed) != monitor.report_digest(base), field
+
+
 def test_report_digest_normalizes_values_and_versions_schema():
     result = _result(CANDIDATE_A, threshold_exceeded=True)
     result.update(
@@ -91,6 +109,11 @@ def test_monitoring_agent_requires_secret_and_contract_id():
         assert False, "expected ValueError for missing secret key"
     except ValueError:
         pass
+
+
+def test_monitoring_agent_rejects_malformed_secret_before_startup():
+    with pytest.raises(Exception, match="(?i)(secret|key)"):
+        monitor.MonitoringAgent(Settings(agent_secret_key="not-a-stellar-secret", contract_id=CONTRACT_ID))
 
     try:
         monitor.MonitoringAgent(Settings(agent_secret_key=AGENT_SECRET, contract_id=""))
@@ -149,3 +172,22 @@ def test_run_once_continues_past_a_scoring_failure(monkeypatch):
 
     assert filed == 1
     assert filed_for == [CANDIDATE_B]
+
+
+def test_failed_submission_does_not_start_cooldown(monkeypatch):
+    settings = Settings(agent_secret_key=AGENT_SECRET, contract_id=CONTRACT_ID)
+    agent = monitor.MonitoringAgent(settings)
+    monkeypatch.setattr(monitor, "recent_network_accounts", lambda *args, **kwargs: [CANDIDATE_A])
+    monkeypatch.setattr(monitor, "score_account", lambda address, _settings: _result(address, threshold_exceeded=True))
+    attempts = []
+
+    def file_flag(address, result):
+        attempts.append(address)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary failure")
+
+    monkeypatch.setattr(agent, "_file_flag", file_flag)
+
+    assert agent.run_once() == 0
+    assert agent.run_once() == 1
+    assert attempts == [CANDIDATE_A, CANDIDATE_A]
