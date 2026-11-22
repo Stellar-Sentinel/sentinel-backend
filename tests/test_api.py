@@ -109,6 +109,10 @@ def test_classic_and_muxed_account_ids_are_checksum_validated(monkeypatch):
     assert client.post("/risk/score", json={"address": corrupted}).status_code == 422
 
 
+def test_address_validation_rejects_oversized_input_before_decoding():
+    assert not is_valid_account_id("G" + "A" * 10_000)
+
+
 def test_account_validation_rejects_noncanonical_shapes_before_upstream(monkeypatch):
     def unexpected_request(*args, **kwargs):
         raise AssertionError("invalid addresses must not reach Horizon")
