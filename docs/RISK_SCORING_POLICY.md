@@ -1,29 +1,39 @@
-# Risk-scoring policy model
+# Risk scoring policy
 
-The baseline policy is a transparent bounded heuristic, not a trained model or
-a compliance decision. It is deterministic for the same input and reports the
-component contributions used to produce the score.
+The screening endpoint returns a deterministic, explainable score. It is a
+triage signal, not proof of fraud, a trained prediction, or financial or
+compliance advice.
 
-## Policy v1.0
+## Inputs and score bands
 
-`run_pipeline(address, recent_tx_count, recent_tx_volume)` assigns up to 60
-points to transaction count and up to 40 points to XLM volume:
+The live scorer derives signals from native Stellar account activity observed
+within the configured activity window:
 
-```text
-transaction_points = min(recent_tx_count / 100, 1) * 60
-volume_points      = min(recent_tx_volume / 1,000,000, 1) * 40
-score              = round(transaction_points + volume_points)
-```
+| Signal | Default trigger | Points |
+| --- | --- | ---: |
+| Activity burst | 50 or more operations | 25 |
+| Native transfer volume | 10,000 XLM or more | 25 |
+| Distinct counterparties | 20 or more | 25 |
+| Low account sequence with activity | Sequence 5 or lower | 15 |
 
-Scores are `low` below 40, `elevated` from 40 through 69, and `high` at 70 or
-above. Inputs must be a non-negative integer count and a finite non-negative
-number for volume; booleans, negative values, NaN, and infinity are rejected.
+Each trigger and point value is configurable. The score sums triggered signals
+and is capped at 100. The default bands are `0-39` (`low`), `40-69`
+(`elevated`), and `70-100` (`high`). `RISK_ELEVATED_SCORE_THRESHOLD` must stay
+below `RISK_HIGH_SCORE_THRESHOLD`; configuration validation rejects an invalid
+pair.
 
-The `risk_policy_version` setting identifies the active policy in screening
-responses. Caps and weights are deliberately visible so calibration can be
-reviewed against labeled Stellar data. The policy does not submit transactions,
-claim fraud, or replace human/compliance review.
+`RISK_POLICY_VERSION` identifies the active policy and is returned as
+`scoring_policy_version`, so saved reports can be interpreted against the
+policy that produced them.
 
-Tests should cover zero, cap, threshold, malformed, and non-finite inputs using
-synthetic values only. No live-chain calls or production account data belong in
-policy fixtures.
+## Operational guidance
+
+Review the individual `signals`, activity sample, metrics, and `as_of` timestamp
+before taking action. A high score only makes the optional monitoring agent
+consider filing a contract flag when the agent is enabled. The HTTP screening
+endpoint itself does not submit an on-chain transaction.
+
+When changing thresholds or weights, update `RISK_POLICY_VERSION`, add or
+adjust regression coverage, and record the reason in deployment notes. Tests
+should use synthetic data only; do not use live-chain calls or production
+account data in policy fixtures.
