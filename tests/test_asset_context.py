@@ -112,3 +112,50 @@ def test_score_handles_empty_and_malformed_asset_records(monkeypatch):
     missing = client.post("/risk/score", json={"address": ADDRESS}).json()
     assert missing["assets"] == []
     assert missing["metrics"]["native_xlm_balance"] == 0
+
+
+def test_score_skips_unknown_asset_types(monkeypatch):
+    monkeypatch.setattr(stellar, "_get", lambda url, **kwargs: {
+        "sequence": "1",
+        "balances": [{"asset_type": "future_asset", "balance": "10"}],
+    } if url.endswith(ADDRESS) else {"_embedded": {"records": []}})
+
+    response = client.post("/risk/score", json={"address": ADDRESS})
+
+    assert response.status_code == 200
+    assert response.json()["assets"] == []
+
+def test_liquidity_pool_assets_do_not_count_as_trustlines(monkeypatch):
+    account = {
+        "sequence": "1",
+        "balances": [
+            {
+                "asset_type": "liquidity_pool_shares",
+                "liquidity_pool_id": "pool-1",
+                "balance": "3.5",
+            },
+            {
+                "asset_type": "credit_alphanum4",
+                "asset_code": "USDC",
+                "asset_issuer": "G" + "D" * 55,
+                "balance": "8.0",
+            },
+        ],
+    }
+
+    def fake_get(url, params=None, settings=None):
+        if url.endswith("/accounts/" + ADDRESS):
+            return account
+        return {"_embedded": {"records": []}}
+
+    monkeypatch.setattr(stellar, "_get", fake_get)
+    result = client.post("/risk/score", json={"address": ADDRESS}).json()
+
+    assert result["metrics"]["trustline_count"] == 1
+    assert result["assets"][0] == {
+        "asset": {
+            "type": "liquidity_pool_shares",
+            "liquidity_pool_id": "pool-1",
+        },
+        "balance": "3.5",
+    }

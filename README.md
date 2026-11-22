@@ -16,6 +16,8 @@ Every HTTP response includes `X-Request-ID`. A supplied ID is reused only when i
 
 `GET /health` and `GET /live` are dependency-free liveness checks. `GET /ready` probes the configured Horizon fee-stats endpoint and Soroban RPC health method using `REQUEST_TIMEOUT_SECONDS`. It returns HTTP 200 when both are reachable, or HTTP 503 with a per-dependency `ok`/`unavailable` status when either is degraded. Upstream exception details are not included in the response.
 
+`GET /events/ingestion` reports this process's event-ingestion health without calling Soroban RPC: a `state` of `disabled`, `unknown`, `ok`, or `failing`, the last sync's stop reason or fixed failure label, the failure streak, bounded counters, the active limits, and the persisted cursor's ledger (never the raw cursor). It is protected by `API_KEY` when one is configured. See [Telemetry and diagnostics](docs/EVENT_INGESTION_CURSOR.md#telemetry-and-diagnostics).
+
 ## Architecture
 
 ```mermaid
@@ -75,6 +77,8 @@ uvicorn app.main:app --reload
 
 Open [http://localhost:8000/docs](http://localhost:8000/docs). Set the frontend's `NEXT_PUBLIC_API_BASE_URL` to this API origin and allow the frontend origin in `CORS_ORIGINS`.
 
+See the [CORS and trusted proxy operations runbook](docs/CORS_AND_PROXY_OPERATIONS.md) for exact-origin matching, forwarded-header assumptions, deployment and rollback steps, and a reproducible preflight check. The generated OpenAPI description also records these security boundaries.
+
 For private deployments, set a random `API_KEY` of at least 32 characters and send it as `Authorization: Bearer <API_KEY>` to business API routes. `/health`, API documentation, and CORS preflight remain accessible. Leave `API_KEY` empty for local development.
 
 ## Commands
@@ -117,7 +121,13 @@ Copy `.env.example` to `.env`; environment variables override file values. Use m
 | `SCREENING_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length for screening requests. |
 | `TRUSTED_PROXY_CIDRS` | empty | Comma-separated IPs/CIDRs of reverse proxies allowed to supply `X-Forwarded-For`. |
 | `EVENT_STORE_PATH` | `./data/events.sqlite3` | SQLite file used for indexed Soroban flag history and the resume cursor. |
+| `EVENT_STORE_ALLOW_NEWER_SCHEMA` | `false` | Startup refuses an event store whose schema version is newer than this release. Set `true` only while deliberately rolling code back over a file a newer release migrated. |
 | `EVENT_INGEST_INTERVAL_SECONDS` | `30` | Delay between event-indexing polls while the app is running. |
+| `EVENT_INGEST_PAGE_SIZE` | `100` | Events requested per Soroban RPC `getEvents` page; 1–1,000. |
+| `EVENT_INGEST_MAX_PAGES` | `25` | Maximum RPC pages one sync reads before yielding; 1–100. Remaining backlog resumes on the next sync. |
+| `EVENT_INGEST_SYNC_BUDGET_SECONDS` | `60` | Wall-clock budget for one sync, checked between pages; 0 < value ≤ 3,600. The first page always runs, so one slow call can overrun it. |
+| `EVENT_INGEST_MAX_BACKOFF_SECONDS` | `300` | Cap on the background indexer's exponential backoff after consecutive failures; never shorter than the poll interval. |
+| `EVENT_INGEST_CURSOR_RECOVERY` | `halt` | `halt` keeps a persisted cursor that RPC rejects and reports `stale`; `reset` drops it once and restarts from the lookback window. |
 | `AGENT_ENABLED` | `false` | Enables the background monitoring agent; also requires `AGENT_SECRET_KEY` and `CONTRACT_ID`. |
 | `AGENT_SECRET_KEY` | empty | Stellar secret seed the monitoring agent signs `flag_anomaly_v2` submissions with; must be authorized as a contract responder. Never commit a real value. |
 | `AGENT_POLL_INTERVAL_SECONDS` | `300` | Delay between monitoring-agent scan/flag cycles. |
@@ -130,7 +140,7 @@ Do not commit `.env`, account secrets, signing keys, or tokens. `API_KEY` is opt
 
 Upstream retry behavior applies only to read-only Horizon requests and Soroban RPC calls. It retries transport errors and selected transient statuses, respects numeric or HTTP-date `Retry-After` values within the configured cap, and leaves client errors and JSON-RPC application errors untouched.
 
-The SQLite database creates `flag_events(scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash)` and `ingestion_state(scope, cursor)` automatically. The `(scope, event_id)` primary key makes replay idempotent; scope is the configured network and contract. The service stores the RPC resume cursor and continues after restarts. Back up `EVENT_STORE_PATH` along with application config; deleting or restoring an older database makes ingestion resume from that database's cursor. Local indexed history begins with the RPC provider's current retained window and only preserves events observed after indexing starts; it cannot recover events already pruned upstream. If RPC is temporarily unavailable, `/events` serves indexed records and marks `source.ingestion_status` as `stale`. For multiple application replicas, use one ingestion worker and a supported shared SQLite volume; SQLite is not intended as a network database. Schema is initialized on startup; schema changes should be shipped with explicit migrations.
+The SQLite database holds `flag_events(scope, event_id, ledger, created_at, agent, subject, score_json, contract_id, tx_hash, report_digest)`, `ingestion_state(scope, cursor)`, and a `schema_migrations(version, name, applied_at)` history table. The `(scope, event_id)` primary key makes replay idempotent; scope is the configured network and contract. The service stores the RPC resume cursor and continues after restarts. Back up `EVENT_STORE_PATH` along with application config; deleting or restoring an older database makes ingestion resume from that database's cursor. Local indexed history begins with the RPC provider's current retained window and only preserves events observed after indexing starts; it cannot recover events already pruned upstream. If RPC is temporarily unavailable, `/events` serves indexed records and marks `source.ingestion_status` as `stale`. Each sync is bounded by `EVENT_INGEST_MAX_PAGES` × `EVENT_INGEST_PAGE_SIZE` and by `EVENT_INGEST_SYNC_BUDGET_SECONDS`, validates every continuation cursor before persisting it (malformed, backwards, or looping cursors are rejected as upstream errors), and writes the cursor with a compare-and-set so overlapping syncs never move it backwards. A request that finds a sync already running in the process serves indexed records without waiting. See [Event ingestion cursor management](docs/EVENT_INGESTION_CURSOR.md) for stop conditions, recovery, and operational examples. For multiple application replicas, use one ingestion worker and a supported shared SQLite volume; SQLite is not intended as a network database. When `CONTRACT_ID` is set, startup applies pending versioned, additive migrations in one transaction before serving; a newer, inconsistent, locked, or unreadable store stops startup instead of serving partially migrated storage. See [Event-store migration operations](docs/EVENT_STORE_MIGRATION_OPERATIONS.md) for the migration rules, rollback, and failure examples.
 
 ## Data and scoring limits
 
