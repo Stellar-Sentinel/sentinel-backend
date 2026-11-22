@@ -48,3 +48,23 @@ def test_production_requires_api_key_and_nonlocal_cors():
         api_key="x" * 32,
         cors_origins="https://app.example",
     ).environment == "production"
+
+
+def test_cors_origins_are_exact_http_origins():
+    settings = Settings(cors_origins="https://dashboard.example, http://localhost:3000")
+
+    assert settings.cors_origin_list == [
+        "https://dashboard.example",
+        "http://localhost:3000",
+    ]
+
+    for origin in (
+        "*",
+        "https://*.example.com",
+        "https://dashboard.example/path",
+        "dashboard.example",
+        "ftp://dashboard.example",
+        "https://dashboard.example:invalid",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(cors_origins=origin)
