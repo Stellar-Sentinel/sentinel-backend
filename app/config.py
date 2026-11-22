@@ -1,10 +1,43 @@
 from functools import lru_cache
 from ipaddress import ip_network
-from urllib.parse import urlsplit
+import re
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+_STELLAR_CONTRACT_ID = re.compile(r"^C[A-Z2-7]{55}$")
+_STELLAR_SECRET_KEY = re.compile(r"^S[A-Z2-7]{55}$")
+_URL_FIELDS = ("horizon_url", "soroban_rpc_url")
+
+
+def _validate_endpoint(value: str, field_name: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{field_name} must not contain embedded credentials")
+    return value.rstrip("/")
+
+
+def configuration_diagnostics(settings: "Settings") -> dict[str, object]:
+    """Return safe startup diagnostics without exposing configuration secrets."""
+    return {
+        "environment": settings.environment,
+        "network_passphrase": settings.network_passphrase,
+        "horizon_origin": _origin(settings.horizon_url),
+        "soroban_rpc_origin": _origin(settings.soroban_rpc_url),
+        "contract_configured": bool(settings.contract_id),
+        "agent_enabled": settings.agent_enabled,
+        "api_key_configured": bool(settings.api_key),
+    }
+
+
+def _origin(value: str) -> str:
+    parsed = urlsplit(value)
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 class Settings(BaseSettings):
@@ -68,6 +101,11 @@ class Settings(BaseSettings):
                 ip_network(item, strict=False)
         return value
 
+    @field_validator("horizon_url", "soroban_rpc_url")
+    @classmethod
+    def validate_endpoint_url(cls, value: str, info) -> str:
+        return _validate_endpoint(value, info.field_name)
+
     @property
     def trusted_proxy_networks(self):
         return [ip_network(item.strip(), strict=False)
@@ -117,6 +155,34 @@ class Settings(BaseSettings):
     def validate_risk_score_bands(self):
         if self.risk_high_score_threshold <= self.risk_elevated_score_threshold:
             raise ValueError("RISK_HIGH_SCORE_THRESHOLD must exceed RISK_ELEVATED_SCORE_THRESHOLD")
+        return self
+
+    @model_validator(mode="after")
+    def validate_deployment_contract(self):
+        environment = self.environment.strip().lower()
+        if not environment:
+            raise ValueError("ENVIRONMENT must not be blank")
+        if not self.network_passphrase.strip():
+            raise ValueError("NETWORK_PASSPHRASE must not be blank")
+        if self.contract_id and not _STELLAR_CONTRACT_ID.fullmatch(self.contract_id):
+            raise ValueError("CONTRACT_ID must be a valid Stellar contract ID")
+        if self.agent_enabled:
+            if not self.contract_id:
+                raise ValueError("AGENT_ENABLED requires CONTRACT_ID")
+            if not self.agent_secret_key:
+                raise ValueError("AGENT_ENABLED requires AGENT_SECRET_KEY")
+            if not _STELLAR_SECRET_KEY.fullmatch(self.agent_secret_key):
+                raise ValueError("AGENT_SECRET_KEY must be a valid Stellar secret key")
+        if environment == "production":
+            if not self.contract_id:
+                raise ValueError("production deployments require CONTRACT_ID")
+            if len(self.api_key) < 32:
+                raise ValueError("production deployments require an API key of at least 32 characters")
+            if any(urlsplit(getattr(self, field)).scheme != "https" for field in _URL_FIELDS):
+                raise ValueError("production upstream URLs must use HTTPS")
+            origins = [origin.strip().lower() for origin in self.cors_origins.split(",") if origin.strip()]
+            if any("localhost" in origin or "127.0.0.1" in origin for origin in origins):
+                raise ValueError("production CORS origins must not include local development hosts")
         return self
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
