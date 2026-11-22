@@ -91,3 +91,23 @@ def test_deployment_diagnostics_redact_secret_values():
     assert diagnostics["agent_secret_configured"] is True
     assert "a" * 32 not in str(diagnostics)
     assert "S" * 56 not in str(diagnostics)
+
+
+def test_cors_origins_are_exact_http_origins():
+    settings = Settings(cors_origins="https://dashboard.example, http://localhost:3000")
+
+    assert settings.cors_origin_list == [
+        "https://dashboard.example",
+        "http://localhost:3000",
+    ]
+
+    for origin in (
+        "*",
+        "https://*.example.com",
+        "https://dashboard.example/path",
+        "dashboard.example",
+        "ftp://dashboard.example",
+        "https://dashboard.example:invalid",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(cors_origins=origin)
