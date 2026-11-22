@@ -34,3 +34,23 @@ def test_accepts_runtime_limit_boundaries():
     assert settings.operation_scan_limit == 1_000
     assert settings.activity_window_days == 365
     assert settings.events_lookback_ledgers == 1_000_000
+
+
+def test_cors_origins_are_exact_http_origins():
+    settings = Settings(cors_origins="https://dashboard.example, http://localhost:3000")
+
+    assert settings.cors_origin_list == [
+        "https://dashboard.example",
+        "http://localhost:3000",
+    ]
+
+    for origin in (
+        "*",
+        "https://*.example.com",
+        "https://dashboard.example/path",
+        "dashboard.example",
+        "ftp://dashboard.example",
+        "https://dashboard.example:invalid",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(cors_origins=origin)
