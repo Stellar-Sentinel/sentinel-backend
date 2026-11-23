@@ -411,12 +411,14 @@ class EventStore:
                     inserted += 1
                 else:
                     duplicates += 1
-            if next_cursor:
-                connection.execute(
-                    """INSERT INTO ingestion_state(scope, cursor) VALUES (?, ?)
-                    ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor""",
-                    (scope, next_cursor),
-                )
+            # Persist terminal state as well as continuation cursors. A NULL cursor means
+            # the retained range is caught up; leaving the previous cursor would replay
+            # the final page forever.
+            connection.execute(
+                """INSERT INTO ingestion_state(scope, cursor) VALUES (?, ?)
+                ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor""",
+                (scope, next_cursor),
+            )
             connection.commit()
             logger.info(
                 "Persisted event page (scope=%s inserted=%d duplicates=%d cursor_present=%s)",
