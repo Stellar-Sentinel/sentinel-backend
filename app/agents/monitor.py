@@ -27,19 +27,38 @@ logger = logging.getLogger("sentinel.agent")
 
 _CONFIRMATION_TIMEOUT_SECONDS = 30
 _CONFIRMATION_POLL_SECONDS = 3
+_CANONICAL_REPORT_FIELDS = (
+    "address",
+    "score",
+    "risk_level",
+    "threshold",
+    "scoring_policy_version",
+    "as_of",
+)
+
+
+def canonical_report_payload(result: dict) -> dict:
+    """Return the validated field set bound by a flaggedv2 digest."""
+    missing = [field for field in _CANONICAL_REPORT_FIELDS if field not in result]
+    if missing:
+        raise ValueError(f"report is missing canonical fields: {', '.join(missing)}")
+    return {field: result[field] for field in _CANONICAL_REPORT_FIELDS}
+
+
 REPORT_DIGEST_SCHEMA_VERSION = 1
 
 
 def canonical_report(result: dict) -> dict:
     """Return the versioned, normalized fields authenticated by a report digest."""
+    payload = canonical_report_payload(result)
     return {
-        "as_of": None if result.get("as_of") is None else str(result["as_of"]),
-        "address": str(result["address"]),
+        "as_of": None if payload["as_of"] is None else str(payload["as_of"]),
+        "address": str(payload["address"]),
         "report_schema_version": REPORT_DIGEST_SCHEMA_VERSION,
-        "risk_level": str(result["risk_level"]),
-        "score": int(result["score"]),
-        "scoring_policy_version": str(result["scoring_policy_version"]),
-        "threshold": int(result["threshold"]),
+        "risk_level": str(payload["risk_level"]),
+        "score": int(payload["score"]),
+        "scoring_policy_version": str(payload["scoring_policy_version"]),
+        "threshold": int(payload["threshold"]),
     }
 
 
