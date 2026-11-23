@@ -61,7 +61,7 @@ def _schema(path):
     with sqlite3.connect(path) as connection:
         return {
             table: connection.execute(f"PRAGMA table_info({table})").fetchall()
-            for table in ("flag_events", "ingestion_state", "schema_migrations")
+            for table in ("flag_events", "ingestion_state", "agent_cooldowns", "schema_migrations")
         } | {
             "indexes": connection.execute(
                 "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name"
@@ -116,7 +116,11 @@ def test_fresh_database_records_every_migration_in_order(tmp_path, caplog):
         (migration.version, migration.name) for migration in MIGRATIONS
     ]
     statuses = [(record.migration, record.status, record.schema_version) for record in _schema_records(caplog)]
-    assert statuses == [("create_event_tables", "applied", 1), ("add_report_digest", "applied", 2)]
+    assert statuses == [
+        ("create_event_tables", "applied", 1),
+        ("add_report_digest", "applied", 2),
+        ("add_agent_cooldowns", "applied", 3),
+    ]
     assert str(path) not in caplog.text
 
 
@@ -131,8 +135,12 @@ def test_legacy_database_upgrades_to_the_same_schema_as_a_fresh_one(tmp_path, ca
 
     assert _schema(legacy) == _schema(fresh)
     statuses = [(record.migration, record.status) for record in _schema_records(caplog)]
-    # The tables already existed, so version 1 is only recorded; version 2 alters the table.
-    assert statuses == [("create_event_tables", "recorded"), ("add_report_digest", "applied")]
+    # Existing tables are adopted; the later migrations add the digest and cooldown table.
+    assert statuses == [
+        ("create_event_tables", "recorded"),
+        ("add_report_digest", "applied"),
+        ("add_agent_cooldowns", "applied"),
+    ]
 
     legacy_event = store.page(limit=10, scope=SCOPE)["events"][0]
     assert legacy_event["id"] == "legacy-event"
@@ -153,7 +161,12 @@ def test_untracked_current_database_is_adopted_without_schema_changes(tmp_path, 
     with caplog.at_level(logging.INFO, logger="sentinel.event_store"):
         store = EventStore(str(path))
 
-    assert {record.status for record in _schema_records(caplog)} == {"recorded"}
+    statuses = [(record.migration, record.status) for record in _schema_records(caplog)]
+    assert statuses == [
+        ("create_event_tables", "recorded"),
+        ("add_report_digest", "recorded"),
+        ("add_agent_cooldowns", "applied"),
+    ]
     assert len(_history(path)) == LATEST_SCHEMA_VERSION
     assert store.page(limit=10, scope=SCOPE)["events"][0]["report_digest"] == "ab" * 32
 
@@ -169,6 +182,18 @@ def test_reopening_a_current_database_changes_nothing(tmp_path, caplog):
     assert _history(path) == history
     assert _schema_records(caplog) == []
     assert reopened.ingestion_cursor(SCOPE) == "cursor-1"
+
+
+def test_agent_cooldowns_are_persisted_and_scoped(tmp_path):
+    store = EventStore(str(tmp_path / "events.sqlite3"))
+    assert store.agent_cooldown(SCOPE, "G" + "A" * 55) is None
+
+    store.save_agent_cooldown(SCOPE, "G" + "A" * 55, 1234.5)
+    assert store.agent_cooldown(SCOPE, "G" + "A" * 55) == 1234.5
+    assert store.agent_cooldown("other-scope", "G" + "A" * 55) is None
+
+    store.clear_agent_cooldown(SCOPE, "G" + "A" * 55)
+    assert store.agent_cooldown(SCOPE, "G" + "A" * 55) is None
 
 
 # -- Newer schemas and rollback --------------------------------------------------
@@ -251,7 +276,7 @@ def test_history_with_a_gap_is_rejected(tmp_path):
         EventStore(str(path))
 
     assert error.value.reason == "history_mismatch"
-    assert [version for version, _, _ in _history(path)] == [2]
+    assert [version for version, _, _ in _history(path)] == [2, 3]
 
 
 def test_failed_migration_rolls_back_the_whole_upgrade(tmp_path, caplog):
@@ -342,7 +367,7 @@ def test_failed_open_is_not_cached(tmp_path):
 
 
 def test_released_catalog_is_contiguous_and_additive():
-    assert _validate_catalog(MIGRATIONS) == LATEST_SCHEMA_VERSION == 2
+    assert _validate_catalog(MIGRATIONS) == LATEST_SCHEMA_VERSION == 3
     step_types = {type(step).__name__ for migration in MIGRATIONS for step in migration.steps}
     assert step_types <= {"CreateTable", "CreateIndex", "AddColumn"}
 
@@ -430,7 +455,7 @@ async def _enter_lifespan():
 
 def test_ingestion_status_reports_unavailable_store_on_schema_error(monkeypatch):
     def refuse(_path):
-        raise EventStoreSchemaError("newer_schema", "event store schema version 3 is newer than supported version 2")
+        raise EventStoreSchemaError("newer_schema", "event store schema version 4 is newer than supported version 3")
 
     monkeypatch.setattr(events_router, "get_settings", lambda: Settings(contract_id="C" + "A" * 55))
     monkeypatch.setattr(events_router, "get_event_store", refuse)

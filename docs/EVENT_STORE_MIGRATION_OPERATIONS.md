@@ -23,6 +23,7 @@ The current catalog is:
 | --- | --- | --- |
 | 1 | `create_event_tables` | `flag_events`, `ingestion_state`, and the `idx_flag_events_page` paging index. |
 | 2 | `add_report_digest` | Nullable `flag_events.report_digest` for `flaggedv2` events. Earlier rows keep `NULL`. |
+| 3 | `add_agent_cooldowns` | Persistent per-scope cooldown timestamps for the optional monitoring agent. |
 
 Example, on a fully migrated file (`sqlite3 events.sqlite3`):
 
@@ -30,6 +31,7 @@ Example, on a fully migrated file (`sqlite3 events.sqlite3`):
 sqlite> SELECT version, name, applied_at FROM schema_migrations;
 1|create_event_tables|2026-11-21T14:02:11+00:00
 2|add_report_digest|2026-11-21T14:02:11+00:00
+3|add_agent_cooldowns|2026-11-21T14:02:11+00:00
 ```
 
 A file created before version tracking has no `schema_migrations` table. It
@@ -106,10 +108,11 @@ never include the database path or event payloads:
 ```text
 INFO  event_store_schema_migration migration=create_event_tables status=recorded
 INFO  event_store_schema_migration migration=add_report_digest status=applied
+INFO  event_store_schema_migration migration=add_agent_cooldowns status=applied
 ERROR event_store_schema_migration migration=create_event_tables status=failed error=OperationalError
-ERROR event_store_schema_check status=rejected reason=newer_schema database_version=3 supported_version=2
-WARNING event_store_schema_check status=allowed reason=newer_schema database_version=3 supported_version=2
-ERROR event_store_schema_check status=failed reason=storage_unavailable database_version=None supported_version=2
+ERROR event_store_schema_check status=rejected reason=newer_schema database_version=4 supported_version=3
+WARNING event_store_schema_check status=allowed reason=newer_schema database_version=4 supported_version=3
+ERROR event_store_schema_check status=failed reason=storage_unavailable database_version=None supported_version=3
 ```
 
 `status=applied` means the schema changed; `status=recorded` means the

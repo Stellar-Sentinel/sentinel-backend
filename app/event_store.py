@@ -168,6 +168,14 @@ MIGRATIONS = (
     Migration(2, "add_report_digest", (
         AddColumn("flag_events", "report_digest", "TEXT"),
     )),
+    Migration(3, "add_agent_cooldowns", (
+        CreateTable("agent_cooldowns", """
+            scope TEXT NOT NULL,
+            address TEXT NOT NULL,
+            flagged_at REAL NOT NULL,
+            PRIMARY KEY (scope, address)
+        """),
+    )),
 )
 
 
@@ -310,6 +318,32 @@ class EventStore:
     def ingestion_cursor(self, scope: str) -> str | None:
         with self._connect() as connection:
             return self._read_cursor(connection, scope)
+
+    def agent_cooldown(self, scope: str, address: str) -> float | None:
+        """Return a persisted cooldown timestamp, if one exists."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT flagged_at FROM agent_cooldowns WHERE scope = ? AND address = ?",
+                (scope, address),
+            ).fetchone()
+        return float(row["flagged_at"]) if row else None
+
+    def save_agent_cooldown(self, scope: str, address: str, flagged_at: float) -> None:
+        """Persist the time an address was most recently flagged."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO agent_cooldowns(scope, address, flagged_at) VALUES (?, ?, ?)
+                ON CONFLICT(scope, address) DO UPDATE SET flagged_at = excluded.flagged_at""",
+                (scope, address, flagged_at),
+            )
+
+    def clear_agent_cooldown(self, scope: str, address: str) -> None:
+        """Remove a persisted cooldown for an address."""
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM agent_cooldowns WHERE scope = ? AND address = ?",
+                (scope, address),
+            )
 
     @staticmethod
     def _read_cursor(connection, scope: str) -> str | None:

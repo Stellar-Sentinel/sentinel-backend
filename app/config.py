@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     agent_poll_interval_seconds: int = Field(default=300, ge=30, le=86_400)
     agent_scan_candidate_limit: int = Field(default=20, ge=1, le=200)
     agent_flag_cooldown_seconds: int = Field(default=3600, ge=60, le=604_800)
+    agent_cooldown_persistence: bool = False
 
     @field_validator("horizon_url", "soroban_rpc_url")
     @classmethod
