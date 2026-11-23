@@ -148,6 +148,9 @@ def test_request_log_uses_route_template_without_sensitive_inputs(caplog):
     assert response.status_code == 404
     log_record = json.loads(caplog.records[-1].message)
     assert log_record["method"] == "GET"
+    assert log_record["event"] == "http.request.completed"
+    assert log_record["schema_version"] == "1"
+    assert log_record["severity"] == "WARNING"
     assert log_record["route"] == "<unmatched>"
     assert log_record["status"] == 404
     assert address not in caplog.text
