@@ -124,6 +124,15 @@ class MonitoringAgent:
         if self.store:
             self.store.save_agent_cooldown(self._cooldown_scope, address, time.time())
 
+    @property
+    def authorization_context(self) -> dict[str, str]:
+        """Return safe-to-log identity context without exposing the secret key."""
+        return {
+            "agent_address": self.keypair.public_key,
+            "contract_id": self.settings.contract_id,
+            "network_passphrase": self.settings.network_passphrase,
+        }
+
     def _on_cooldown(self, address: str) -> bool:
         last = self._last_flagged_at.get(address)
         if last is not None and (time.monotonic() - last) < self.settings.agent_flag_cooldown_seconds:

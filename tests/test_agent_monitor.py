@@ -100,6 +100,17 @@ def test_monitoring_agent_requires_secret_and_contract_id():
         pass
 
 
+def test_monitoring_agent_exposes_safe_authorization_context():
+    agent = monitor.MonitoringAgent(Settings(agent_secret_key=AGENT_SECRET, contract_id=CONTRACT_ID))
+
+    assert agent.authorization_context == {
+        "agent_address": AGENT_ADDRESS,
+        "contract_id": CONTRACT_ID,
+        "network_passphrase": Settings().network_passphrase,
+    }
+    assert "secret" not in agent.authorization_context
+
+
 def test_monitoring_agent_rejects_malformed_secret_before_startup():
     with pytest.raises(Exception, match="(?i)(secret|key)"):
         monitor.MonitoringAgent(Settings(agent_secret_key="not-a-stellar-secret", contract_id=CONTRACT_ID))
